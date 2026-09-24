@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/manavsingla/taskflow/internal/model"
-	"github.com/manavsingla/taskflow/internal/store"
+	"github.com/G1lollipop/atlas/internal/model"
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
 // fakeStore is a minimal in-memory store.Store used only to exercise the api package's

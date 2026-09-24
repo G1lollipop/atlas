@@ -1,4 +1,4 @@
-// Command api serves taskflow's HTTP API (job/run submission and inspection) plus a
+// Command api serves atlas's HTTP API (job/run submission and inspection) plus a
 // dedicated Prometheus metrics endpoint on a second port, matching the worker and
 // scheduler binaries so all three are scraped the same way in docker-compose/k8s.
 package main
@@ -14,13 +14,13 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/manavsingla/taskflow/internal/api"
-	"github.com/manavsingla/taskflow/internal/cache"
-	"github.com/manavsingla/taskflow/internal/config"
-	"github.com/manavsingla/taskflow/internal/logger"
-	"github.com/manavsingla/taskflow/internal/metrics"
-	"github.com/manavsingla/taskflow/internal/store"
-	"github.com/manavsingla/taskflow/internal/tracing"
+	"github.com/G1lollipop/atlas/internal/api"
+	"github.com/G1lollipop/atlas/internal/cache"
+	"github.com/G1lollipop/atlas/internal/config"
+	"github.com/G1lollipop/atlas/internal/logger"
+	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/store"
+	"github.com/G1lollipop/atlas/internal/tracing"
 )
 
 func main() {
@@ -81,7 +81,7 @@ func main() {
 	defer svc.Close()
 
 	router := api.NewRouter(svc, log, cfg.JWTSecret, cfg.RateLimitRPS, cfg.RateLimitBurst)
-	tracedRouter := otelhttp.NewHandler(router, "taskflow-api")
+	tracedRouter := otelhttp.NewHandler(router, "atlas-api")
 
 	apiServer := &http.Server{Addr: cfg.HTTPAddr, Handler: tracedRouter}
 	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: metrics.Handler()}

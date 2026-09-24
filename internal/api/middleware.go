@@ -8,10 +8,10 @@ import (
 
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
-	"github.com/manavsingla/taskflow/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/metrics"
 )
 
-// requestLogger logs one line per request and records taskflow_http_request_duration_seconds.
+// requestLogger logs one line per request and records atlas_http_request_duration_seconds.
 // It wraps the ResponseWriter to capture the status code chi's Recoverer/handlers set,
 // since a plain http.ResponseWriter doesn't expose what was written after the fact.
 func requestLogger(log *slog.Logger) func(http.Handler) http.Handler {

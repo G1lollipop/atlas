@@ -19,7 +19,7 @@ provider "aws" {
 # --- Networking / security groups ---
 
 resource "aws_security_group" "alb" {
-  name   = "taskflow-alb-${var.environment}"
+  name   = "atlas-alb-${var.environment}"
   vpc_id = var.vpc_id
 
   ingress {
@@ -38,7 +38,7 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "ecs" {
-  name   = "taskflow-ecs-${var.environment}"
+  name   = "atlas-ecs-${var.environment}"
   vpc_id = var.vpc_id
 
   ingress {
@@ -64,7 +64,7 @@ resource "aws_security_group" "ecs" {
 }
 
 resource "aws_security_group" "rds" {
-  name   = "taskflow-rds-${var.environment}"
+  name   = "atlas-rds-${var.environment}"
   vpc_id = var.vpc_id
 
   ingress {
@@ -84,22 +84,22 @@ resource "aws_security_group" "rds" {
 
 # --- Datastore ---
 
-resource "aws_db_subnet_group" "taskflow" {
-  name       = "taskflow-${var.environment}"
+resource "aws_db_subnet_group" "atlas" {
+  name       = "atlas-${var.environment}"
   subnet_ids = var.subnet_ids
 }
 
-resource "aws_db_instance" "taskflow" {
-  identifier             = "taskflow-${var.environment}"
+resource "aws_db_instance" "atlas" {
+  identifier             = "atlas-${var.environment}"
   engine                 = "postgres"
   engine_version         = "16"
   instance_class         = "db.t4g.micro"
   allocated_storage      = 20
   storage_encrypted      = true
-  db_name                = "taskflow"
+  db_name                = "atlas"
   username               = var.db_username
   password               = var.db_password
-  db_subnet_group_name   = aws_db_subnet_group.taskflow.name
+  db_subnet_group_name   = aws_db_subnet_group.atlas.name
   vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
   skip_final_snapshot    = true
@@ -108,16 +108,16 @@ resource "aws_db_instance" "taskflow" {
 # --- Secrets ---
 
 resource "aws_secretsmanager_secret" "database_url" {
-  name = "taskflow/${var.environment}/database-url"
+  name = "atlas/${var.environment}/database-url"
 }
 
 resource "aws_secretsmanager_secret_version" "database_url" {
   secret_id     = aws_secretsmanager_secret.database_url.id
-  secret_string = "postgres://${var.db_username}:${var.db_password}@${aws_db_instance.taskflow.endpoint}/taskflow?sslmode=require"
+  secret_string = "postgres://${var.db_username}:${var.db_password}@${aws_db_instance.atlas.endpoint}/atlas?sslmode=require"
 }
 
 resource "aws_secretsmanager_secret" "jwt_secret" {
-  name = "taskflow/${var.environment}/jwt-secret"
+  name = "atlas/${var.environment}/jwt-secret"
 }
 
 resource "aws_secretsmanager_secret_version" "jwt_secret" {
@@ -127,12 +127,12 @@ resource "aws_secretsmanager_secret_version" "jwt_secret" {
 
 # --- ECS cluster ---
 
-resource "aws_ecs_cluster" "taskflow" {
-  name = "taskflow-${var.environment}"
+resource "aws_ecs_cluster" "atlas" {
+  name = "atlas-${var.environment}"
 }
 
 resource "aws_iam_role" "execution" {
-  name = "taskflow-ecs-execution-${var.environment}"
+  name = "atlas-ecs-execution-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -150,7 +150,7 @@ resource "aws_iam_role_policy_attachment" "execution" {
 }
 
 resource "aws_iam_role_policy" "execution_secrets" {
-  name = "taskflow-ecs-secrets-${var.environment}"
+  name = "atlas-ecs-secrets-${var.environment}"
   role = aws_iam_role.execution.id
 
   policy = jsonencode({
@@ -175,7 +175,7 @@ locals {
 }
 
 resource "aws_ecs_task_definition" "api" {
-  family                   = "taskflow-api-${var.environment}"
+  family                   = "atlas-api-${var.environment}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = "256"
@@ -184,7 +184,7 @@ resource "aws_ecs_task_definition" "api" {
 
   container_definitions = jsonencode([{
     name      = "api"
-    image     = "${var.ecr_repo_url}/taskflow-api:${var.image_tag}"
+    image     = "${var.ecr_repo_url}/atlas-api:${var.image_tag}"
     essential = true
     portMappings = [
       { containerPort = 8080, protocol = "tcp" },
@@ -199,7 +199,7 @@ resource "aws_ecs_task_definition" "api" {
 }
 
 resource "aws_ecs_task_definition" "worker" {
-  family                   = "taskflow-worker-${var.environment}"
+  family                   = "atlas-worker-${var.environment}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = "256"
@@ -208,7 +208,7 @@ resource "aws_ecs_task_definition" "worker" {
 
   container_definitions = jsonencode([{
     name      = "worker"
-    image     = "${var.ecr_repo_url}/taskflow-worker:${var.image_tag}"
+    image     = "${var.ecr_repo_url}/atlas-worker:${var.image_tag}"
     essential = true
     portMappings = [
       { containerPort = 9090, protocol = "tcp" },
@@ -221,7 +221,7 @@ resource "aws_ecs_task_definition" "worker" {
 }
 
 resource "aws_ecs_task_definition" "scheduler" {
-  family                   = "taskflow-scheduler-${var.environment}"
+  family                   = "atlas-scheduler-${var.environment}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = "256"
@@ -230,7 +230,7 @@ resource "aws_ecs_task_definition" "scheduler" {
 
   container_definitions = jsonencode([{
     name      = "scheduler"
-    image     = "${var.ecr_repo_url}/taskflow-scheduler:${var.image_tag}"
+    image     = "${var.ecr_repo_url}/atlas-scheduler:${var.image_tag}"
     essential = true
     portMappings = [
       { containerPort = 9090, protocol = "tcp" },
@@ -245,7 +245,7 @@ resource "aws_ecs_task_definition" "scheduler" {
 # --- ALB (api only - worker/scheduler don't serve traffic) ---
 
 resource "aws_lb" "api" {
-  name               = "taskflow-api-${var.environment}"
+  name               = "atlas-api-${var.environment}"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
@@ -253,7 +253,7 @@ resource "aws_lb" "api" {
 }
 
 resource "aws_lb_target_group" "api" {
-  name        = "taskflow-api-${var.environment}"
+  name        = "atlas-api-${var.environment}"
   port        = 8080
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
@@ -278,8 +278,8 @@ resource "aws_lb_listener" "api" {
 # --- ECS services ---
 
 resource "aws_ecs_service" "api" {
-  name            = "taskflow-api"
-  cluster         = aws_ecs_cluster.taskflow.id
+  name            = "atlas-api"
+  cluster         = aws_ecs_cluster.atlas.id
   task_definition = aws_ecs_task_definition.api.arn
   desired_count   = 2
   launch_type     = "FARGATE"
@@ -299,8 +299,8 @@ resource "aws_ecs_service" "api" {
 }
 
 resource "aws_ecs_service" "worker" {
-  name            = "taskflow-worker"
-  cluster         = aws_ecs_cluster.taskflow.id
+  name            = "atlas-worker"
+  cluster         = aws_ecs_cluster.atlas.id
   task_definition = aws_ecs_task_definition.worker.arn
   desired_count   = 2
   launch_type     = "FARGATE"
@@ -312,8 +312,8 @@ resource "aws_ecs_service" "worker" {
 }
 
 resource "aws_ecs_service" "scheduler" {
-  name            = "taskflow-scheduler"
-  cluster         = aws_ecs_cluster.taskflow.id
+  name            = "atlas-scheduler"
+  cluster         = aws_ecs_cluster.atlas.id
   task_definition = aws_ecs_task_definition.scheduler.arn
   desired_count   = 2
   launch_type     = "FARGATE"

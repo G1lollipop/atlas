@@ -1,5 +1,7 @@
 # Verification: real runs, real numbers
 
+> **Historical upstream results:** The measurements and run notes below were recorded for Taskflow at commit `64bb4d9d50bc61045f49abf2558a151c7e5973d8`. They have not been reproduced for Atlas. See [PROVENANCE.md](PROVENANCE.md).
+
 Every claim in this document was produced by actually running the system, not by
 inspecting the code and asserting behavior. Commands are included so any of this can
 be reproduced locally (`docker compose up -d postgres`, build the three binaries with
@@ -73,7 +75,7 @@ Actual log output from `chaos-worker-2`:
 ```
 
 Final run state: `status=succeeded`, `leased_by=chaos-worker-2`, `attempt=3`,
-`result={"slept_seconds":10}`. The `taskflow_leases_reclaimed_total` counter read `1`
+`result={"slept_seconds":10}`. The `atlas_leases_reclaimed_total` counter read `1`
 on worker2's `/metrics` — the reclaim janitor (`internal/worker/janitor.go`) actually
 detected and repaired the abandoned lease, and the job completed successfully on a
 different worker with no manual intervention. This is the concrete mechanism behind
@@ -128,13 +130,13 @@ Started Postgres + Redis (`docker compose up -d postgres redis`), ran `api` with
 ```
 $ curl -w "time: %{time_total}s\n" .../v1/jobs/<id>   # 1st call, cold
 time: 0.059545s
-$ redis-cli GET taskflow:job:<id>
+$ redis-cli GET atlas:job:<id>
 {"id":"...","name":"echo",...,"status":"active",...}   # confirmed actually cached
 $ curl -w "time: %{time_total}s\n" .../v1/jobs/<id>   # 2nd call, cached
 time: 0.000968s
-$ curl .../metrics | grep taskflow_cache
-taskflow_cache_hits_total{entity="job"} 1
-taskflow_cache_misses_total{entity="job"} 1
+$ curl .../metrics | grep atlas_cache
+atlas_cache_hits_total{entity="job"} 1
+atlas_cache_misses_total{entity="job"} 1
 ```
 
 ~60x faster on the cached read (59.5ms → 0.97ms), and the hit/miss counters matched
@@ -163,9 +165,9 @@ postgres-replica-1 | started streaming WAL from primary at 0/3000000 on timeline
 Confirmed standby state and replication directly via `psql`:
 
 ```
-$ docker compose exec postgres-replica psql -U taskflow -d taskflow -c "SELECT pg_is_in_recovery();"
+$ docker compose exec postgres-replica psql -U atlas -d atlas -c "SELECT pg_is_in_recovery();"
  t
-$ docker compose exec postgres psql -U taskflow -d taskflow -c "SELECT client_addr, state, sync_state FROM pg_stat_replication;"
+$ docker compose exec postgres psql -U atlas -d atlas -c "SELECT client_addr, state, sync_state FROM pg_stat_replication;"
  192.168.117.3 | streaming | async
 
 $ docker compose exec postgres psql ... -c "INSERT INTO jobs (name, payload) VALUES ('replica-test', '{}');"
@@ -186,7 +188,7 @@ $ docker compose exec postgres-replica psql ... -c "SELECT pg_stat_reset();"
 $ curl http://localhost:8080/v1/jobs/<id> -H "Authorization: Bearer $TOKEN"
 {"id":"...","name":"replica-test",...}
 
-$ docker compose exec postgres-replica psql ... -c "SELECT xact_commit, tup_returned FROM pg_stat_database WHERE datname='taskflow';"
+$ docker compose exec postgres-replica psql ... -c "SELECT xact_commit, tup_returned FROM pg_stat_database WHERE datname='atlas';"
  5 | 97   # <- moved: this GetJob call really executed here
 ```
 
@@ -197,7 +199,7 @@ name says under a real HTTP request, not just in isolation.
 
 ## Kubernetes
 
-Created a real local cluster (`kind create cluster --name taskflow`), built the three
+Created a real local cluster (`kind create cluster --name atlas`), built the three
 images, loaded them in (`kind load docker-image ...`), deployed a throwaway Postgres
 in-cluster, then applied the actual repo manifests (`k8s/configmap.yaml`,
 `k8s/api-deployment.yaml`, `k8s/worker-deployment.yaml`,
@@ -206,9 +208,9 @@ in-cluster, then applied the actual repo manifests (`k8s/configmap.yaml`,
 ```
 $ kubectl get pods
 postgres-...             1/1     Running
-taskflow-api-...         1/1     Running   (x2)
-taskflow-worker-...      1/1     Running   (x2)
-taskflow-scheduler-...   1/1     Running   (x2)
+atlas-api-...         1/1     Running   (x2)
+atlas-worker-...      1/1     Running   (x2)
+atlas-scheduler-...   1/1     Running   (x2)
 ```
 
 First attempt hit a real bug: pods stuck in `ImagePullBackOff` because the manifests'
@@ -219,11 +221,11 @@ three deployments, re-applied, all pods came up clean.
 Port-forwarded to the Service and drove it exactly like the docker-compose tests:
 
 ```
-$ kubectl port-forward svc/taskflow-api 18080:80
+$ kubectl port-forward svc/atlas-api 18080:80
 $ curl -X POST localhost:18080/v1/jobs -H "Authorization: Bearer $TOKEN" \
     -d '{"name":"echo","payload":{"k8s":"real-cluster-test"}, ...}'
 $ curl localhost:18080/v1/jobs/<id>/runs -H "Authorization: Bearer $TOKEN"
-[{"status":"succeeded", "leased_by":"taskflow-worker-c55468f7-kvrz7-1", ...}]
+[{"status":"succeeded", "leased_by":"atlas-worker-c55468f7-kvrz7-1", ...}]
 ```
 
 `leased_by` names an actual pod - proof the lease/execute path works correctly across
@@ -236,14 +238,14 @@ HPAs aren't just configured but actually functional:
 
 ```
 # before metrics-server:
-taskflow-api      cpu: <unknown>/70%
+atlas-api      cpu: <unknown>/70%
 # after:
-taskflow-api      cpu: 27%/70%
-taskflow-worker   cpu: 26%/70%
+atlas-api      cpu: 27%/70%
+atlas-worker   cpu: 26%/70%
 ```
 
 Cluster and all local images were torn down after verification
-(`kind delete cluster --name taskflow`) - this was a proof run, not a persistent
+(`kind delete cluster --name atlas`) - this was a proof run, not a persistent
 environment.
 
 ## Leader-election failover
@@ -262,9 +264,9 @@ started cleanly:
 
 ```
 $ curl localhost:9201/metrics | grep is_leader
-taskflow_scheduler_is_leader 0
+atlas_scheduler_is_leader 0
 $ curl localhost:9202/metrics | grep is_leader
-taskflow_scheduler_is_leader 1        # scheduler-2 is the leader
+atlas_scheduler_is_leader 1        # scheduler-2 is the leader
 
 $ psql -c "INSERT INTO jobs (name, payload) VALUES ('failover-test-1', '{}');"
 $ tail scheduler-2.log
@@ -276,7 +278,7 @@ Then killed the leader hard, mid-process, and watched the standby take over:
 ```
 $ kill -9 <scheduler-2 pid>
 $ sleep 3 && curl localhost:9201/metrics | grep is_leader
-taskflow_scheduler_is_leader 1        # scheduler-1 took over within ~3s
+atlas_scheduler_is_leader 1        # scheduler-1 took over within ~3s
 
 $ psql -c "INSERT INTO jobs (name, payload) VALUES ('failover-test-2', '{}');"
 $ tail scheduler-1.log

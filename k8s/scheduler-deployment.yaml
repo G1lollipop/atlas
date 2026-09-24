@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: taskflow-scheduler
+  name: atlas-scheduler
 spec:
   # Safe to run at 2 replicas because the scheduler uses leader election - only
   # the elected leader promotes, the rest sit as standbys. No HPA here: promotion
@@ -9,26 +9,26 @@ spec:
   replicas: 2
   selector:
     matchLabels:
-      app: taskflow-scheduler
+      app: atlas-scheduler
   template:
     metadata:
       labels:
-        app: taskflow-scheduler
+        app: atlas-scheduler
     spec:
       containers:
         - name: scheduler
           # Real deploys should reference a registry-qualified image (e.g.
-          # <account>.dkr.ecr.<region>.amazonaws.com/taskflow-scheduler:<tag>), not :latest.
-          image: taskflow-scheduler:latest
+          # <account>.dkr.ecr.<region>.amazonaws.com/atlas-scheduler:<tag>), not :latest.
+          image: atlas-scheduler:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9090
               name: metrics
           envFrom:
             - configMapRef:
-                name: taskflow-config
+                name: atlas-config
             - secretRef:
-                name: taskflow-secrets
+                name: atlas-secrets
           resources:
             requests:
               cpu: 100m

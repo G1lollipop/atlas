@@ -20,7 +20,7 @@ type bucket struct {
 // current scale, rate limiting exists to blunt abusive submission bursts against a
 // single instance, not to enforce one hard quota across a fleet, so each replica
 // policing its own traffic independently is an acceptable trade-off. A shared/
-// distributed limiter would be the natural next step if taskflow's API scaled out to
+// distributed limiter would be the natural next step if atlas's API scaled out to
 // multiple replicas that needed one true combined limit per client.
 type rateLimiter struct {
 	mu      sync.Mutex

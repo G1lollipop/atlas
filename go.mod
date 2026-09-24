@@ -1,4 +1,4 @@
-module github.com/manavsingla/taskflow
+module github.com/G1lollipop/atlas
 
 go 1.26.5
 

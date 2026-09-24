@@ -3,7 +3,7 @@
 // unlike the unit tests in internal/scheduler and internal/worker, which use an
 // in-memory fake store. It requires a reachable Postgres and is skipped otherwise
 // (CI provides one via a service container; locally, `docker compose up -d postgres`
-// plus DATABASE_URL=postgres://taskflow:taskflow@localhost:5432/taskflow?sslmode=disable).
+// plus DATABASE_URL=postgres://atlas:atlas@localhost:5432/atlas?sslmode=disable).
 package integration
 
 import (
@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/manavsingla/taskflow/internal/api"
-	"github.com/manavsingla/taskflow/internal/model"
-	"github.com/manavsingla/taskflow/internal/scheduler"
-	"github.com/manavsingla/taskflow/internal/store"
-	"github.com/manavsingla/taskflow/internal/worker"
+	"github.com/G1lollipop/atlas/internal/api"
+	"github.com/G1lollipop/atlas/internal/model"
+	"github.com/G1lollipop/atlas/internal/scheduler"
+	"github.com/G1lollipop/atlas/internal/store"
+	"github.com/G1lollipop/atlas/internal/worker"
 )
 
 const testSecret = "integration-test-secret"

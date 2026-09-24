@@ -10,13 +10,13 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
-	"github.com/manavsingla/taskflow/internal/lock"
-	"github.com/manavsingla/taskflow/internal/metrics"
-	"github.com/manavsingla/taskflow/internal/model"
-	"github.com/manavsingla/taskflow/internal/store"
+	"github.com/G1lollipop/atlas/internal/lock"
+	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/model"
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
-var tracer = otel.Tracer("taskflow/scheduler")
+var tracer = otel.Tracer("atlas/scheduler")
 
 // listActiveJobsLimit bounds the single ListJobs page the promoter scans per pass.
 // A real deployment with more active jobs than this would silently stop promoting

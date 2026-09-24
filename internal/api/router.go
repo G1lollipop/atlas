@@ -1,4 +1,4 @@
-// Package api implements taskflow's HTTP surface: job/run/worker CRUD-ish endpoints
+// Package api implements atlas's HTTP surface: job/run/worker CRUD-ish endpoints
 // behind JWT auth and a per-IP rate limiter, plus unauthenticated /healthz and /metrics.
 package api
 
@@ -9,8 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
-	"github.com/manavsingla/taskflow/internal/metrics"
-	"github.com/manavsingla/taskflow/internal/store"
+	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
 // NewRouter wires the full HTTP API. jwtSecret is the shared HS256 secret used to

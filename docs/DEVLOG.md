@@ -1,6 +1,8 @@
 # Devlog
 
-taskflow was built by parallelizing implementation across multiple independent AI
+> **Historical upstream material:** This document was inherited from Taskflow at commit `64bb4d9d50bc61045f49abf2558a151c7e5973d8` and records its original development history. It is not a record of work reproduced against Atlas. See [PROVENANCE.md](PROVENANCE.md).
+
+Taskflow was built by parallelizing implementation across multiple independent AI
 agents working against a pre-fixed set of shared interfaces, rather than one agent
 building the system linearly front to back.
 

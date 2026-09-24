@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/manavsingla/taskflow/internal/model"
+	"github.com/G1lollipop/atlas/internal/model"
 )
 
 // Handler executes a Job for a given JobRun attempt and returns the result to persist.

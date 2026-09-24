@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/manavsingla/taskflow/internal/model"
+	"github.com/G1lollipop/atlas/internal/model"
 )
 
 const jobColumns = `id, name, payload, cron_expr, priority, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`

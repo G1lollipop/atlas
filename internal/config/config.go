@@ -28,7 +28,7 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		DatabaseURL:  getEnv("DATABASE_URL", "postgres://taskflow:taskflow@localhost:5432/taskflow?sslmode=disable"),
+		DatabaseURL:  getEnv("DATABASE_URL", "postgres://atlas:atlas@localhost:5432/atlas?sslmode=disable"),
 		HTTPAddr:     getEnv("HTTP_ADDR", ":8080"),
 		JWTSecret:    getEnv("JWT_SECRET", ""),
 		MetricsAddr:  getEnv("METRICS_ADDR", ":9090"),

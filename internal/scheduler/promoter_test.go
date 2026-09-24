@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/manavsingla/taskflow/internal/model"
+	"github.com/G1lollipop/atlas/internal/model"
 )
 
 func testLogger() *slog.Logger {

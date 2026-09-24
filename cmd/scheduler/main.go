@@ -12,13 +12,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/manavsingla/taskflow/internal/config"
-	"github.com/manavsingla/taskflow/internal/lock"
-	"github.com/manavsingla/taskflow/internal/logger"
-	"github.com/manavsingla/taskflow/internal/metrics"
-	"github.com/manavsingla/taskflow/internal/scheduler"
-	"github.com/manavsingla/taskflow/internal/store"
-	"github.com/manavsingla/taskflow/internal/tracing"
+	"github.com/G1lollipop/atlas/internal/config"
+	"github.com/G1lollipop/atlas/internal/lock"
+	"github.com/G1lollipop/atlas/internal/logger"
+	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/scheduler"
+	"github.com/G1lollipop/atlas/internal/store"
+	"github.com/G1lollipop/atlas/internal/tracing"
 )
 
 // promotionLockKey is an arbitrary fixed key identifying the "promoter leader" slot in

@@ -27,16 +27,16 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/manavsingla/taskflow/internal/metrics"
-	"github.com/manavsingla/taskflow/internal/model"
-	"github.com/manavsingla/taskflow/internal/store"
+	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/model"
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
 const (
 	jobTTL       = 30 * time.Second
 	runTTL       = 1 * time.Hour
-	jobKeyPrefix = "taskflow:job:"
-	runKeyPrefix = "taskflow:run:"
+	jobKeyPrefix = "atlas:job:"
+	runKeyPrefix = "atlas:run:"
 )
 
 // Store decorates a store.Store with cache-aside reads for GetJob/GetRun. All other

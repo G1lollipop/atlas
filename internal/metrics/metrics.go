@@ -14,54 +14,54 @@ import (
 
 var (
 	JobsSubmitted = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "taskflow_jobs_submitted_total",
+		Name: "atlas_jobs_submitted_total",
 		Help: "Total number of jobs submitted via the API.",
 	})
 
 	RunsLeased = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "taskflow_runs_leased_total",
+		Name: "atlas_runs_leased_total",
 		Help: "Total number of job runs leased by a worker.",
 	}, []string{"worker_id"})
 
 	RunsCompleted = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "taskflow_runs_completed_total",
+		Name: "atlas_runs_completed_total",
 		Help: "Total number of job runs completed, by outcome.",
 	}, []string{"outcome"}) // succeeded|failed|dead
 
 	RunDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "taskflow_run_duration_seconds",
+		Name:    "atlas_run_duration_seconds",
 		Help:    "Duration of job run execution.",
 		Buckets: prometheus.DefBuckets,
 	})
 
 	QueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "taskflow_queue_depth",
+		Name: "atlas_queue_depth",
 		Help: "Number of runs currently in pending status.",
 	})
 
 	LeasesReclaimed = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "taskflow_leases_reclaimed_total",
+		Name: "atlas_leases_reclaimed_total",
 		Help: "Total number of runs reclaimed from a worker whose lease expired.",
 	})
 
 	HTTPRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "taskflow_http_request_duration_seconds",
+		Name:    "atlas_http_request_duration_seconds",
 		Help:    "HTTP request duration by route and status code.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"route", "method", "status"})
 
 	IsLeader = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "taskflow_scheduler_is_leader",
+		Name: "atlas_scheduler_is_leader",
 		Help: "1 if this scheduler replica currently holds the promotion leader lock.",
 	})
 
 	CacheHits = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "taskflow_cache_hits_total",
+		Name: "atlas_cache_hits_total",
 		Help: "Total number of read-through cache hits, by entity type.",
 	}, []string{"entity"}) // job|run
 
 	CacheMisses = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "taskflow_cache_misses_total",
+		Name: "atlas_cache_misses_total",
 		Help: "Total number of read-through cache misses, by entity type.",
 	}, []string{"entity"})
 )

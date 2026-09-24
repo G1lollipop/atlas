@@ -13,7 +13,7 @@ import (
 // system: any bearer token signed with jwtSecret grants the same full access to the
 // whole API. That's a deliberate scope boundary for this admin-facing service, not an
 // oversight — per-subject scopes/revocation would replace this middleware wholesale
-// rather than extend it, if taskflow ever grew real multi-tenant users.
+// rather than extend it, if atlas ever grew real multi-tenant users.
 func jwtAuth(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

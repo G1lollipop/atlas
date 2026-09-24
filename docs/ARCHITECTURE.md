@@ -1,5 +1,7 @@
 # Architecture
 
+> **Historical upstream material:** This document was inherited from Taskflow at commit `64bb4d9d50bc61045f49abf2558a151c7e5973d8`. Its design notes and verification claims describe that revision and have not been reproduced for Atlas. See [PROVENANCE.md](PROVENANCE.md).
+
 ## Overview
 
 ```mermaid
@@ -75,7 +77,7 @@ Walking it end to end:
 
 ## Why Postgres as the queue, not Kafka/SQS
 
-taskflow reuses its transactional store as the job queue via the `SKIP LOCKED` pattern
+atlas reuses its transactional store as the job queue via the `SKIP LOCKED` pattern
 (`internal/store/postgres.go: LeaseNextRun`) rather than adding a second broker. The
 reasoning:
 
@@ -121,10 +123,10 @@ plane. A system that needed leader election to survive its primary datastore bei
 unavailable would need etcd/ZooKeeper instead.
 
 **Verified for real, not just designed**: ran two scheduler replicas against the same
-Postgres, confirmed via `taskflow_scheduler_is_leader` which one held the lock,
+Postgres, confirmed via `atlas_scheduler_is_leader` which one held the lock,
 inserted a job and watched the leader's log promote it. Then `kill -9`'d the leader
 process mid-run (no graceful shutdown) and confirmed the standby's
-`taskflow_scheduler_is_leader` flipped to 1 within ~3s (the session-scoped advisory
+`atlas_scheduler_is_leader` flipped to 1 within ~3s (the session-scoped advisory
 lock releasing the instant the holder's connection died), then inserted a second job
 and confirmed the *new* leader's log promoted it — failover isn't just a metric
 flipping, the standby actually resumes real promotion work. See
@@ -155,7 +157,7 @@ both win.
 Eventual consistency shows up elsewhere, deliberately:
 
 - **Metrics/dashboards** — Prometheus scrapes every 15s (`docker/prometheus/
-  prometheus.yml`); `taskflow_queue_depth` and friends are always some seconds stale.
+  prometheus.yml`); `atlas_queue_depth` and friends are always some seconds stale.
   That's fine — nothing about correctness depends on the dashboard being current.
 - **Worker heartbeats** — `UpsertWorkerHeartbeat` runs on `PollInterval` from a
   background goroutine independent of the lease/execute path; `ListWorkers` can report a
@@ -175,18 +177,18 @@ concurrent creates with the same key) is caught by a unique constraint on
 (`store.ErrIdempotencyConflict`).
 
 On the execution side, the attempt-based retry/backoff loop guarantees a run is not
-silently duplicated by taskflow's own machinery: `LeaseNextRun` increments `attempt`
+silently duplicated by atlas's own machinery: `LeaseNextRun` increments `attempt`
 atomically as part of the same transaction that claims the row, so a crash between
 claiming and executing can only be reclaimed by the janitor after the lease expires, not
 run concurrently by two workers.
 
-None of this makes job execution exactly-once. taskflow guarantees **at-least-once**
+None of this makes job execution exactly-once. atlas guarantees **at-least-once**
 execution: a worker can lease a run, start executing a handler with real side effects,
 crash before recording the result, and have the janitor reclaim the run for another
 worker to execute again. Handlers with external side effects (an HTTP call, a database
 write, a message send) are responsible for their own idempotency (e.g. keying on
 `run.ID` or `job.IdempotencyKey`) if that matters for their workload. This is stated
-plainly rather than glossed over: taskflow does not solve exactly-once delivery.
+plainly rather than glossed over: atlas does not solve exactly-once delivery.
 
 ## Caching
 
@@ -266,9 +268,9 @@ applied to a real local cluster (`kind`), not just written and left unproven:
 - Built the three images, loaded them into the cluster's node (`kind load
   docker-image`), applied the manifests against a throwaway in-cluster Postgres.
 - All 6 pods (2 api, 2 worker, 2 scheduler) reached `Running`/`1/1 Ready`.
-- Port-forwarded to the `taskflow-api` Service and created a job through the real
+- Port-forwarded to the `atlas-api` Service and created a job through the real
   HTTP path — it was promoted and executed, and the run's `leased_by` field showed the
-  actual pod name (`taskflow-worker-c55468f7-kvrz7-1`), confirming multi-replica
+  actual pod name (`atlas-worker-c55468f7-kvrz7-1`), confirming multi-replica
   leasing works correctly across real pods, not just across goroutines in one process.
 - Installed `metrics-server` (not bundled with vanilla `kind`) and confirmed the HPAs
   went from `cpu: <unknown>/70%` to real readings (`cpu: 27%/70%`, `cpu: 26%/70%`) -
@@ -328,7 +330,7 @@ real next step for a fully linked trace — not implemented here.
   one shared `JWT_SECRET`; there's no per-subject scoping, no revocation, no notion of
   "this caller may only see their own jobs." Every valid token has full admin access to
   every job in the system. That's a deliberate scope boundary for what is currently an
-  admin-facing service, not an oversight — but it means taskflow is not safe to expose
+  admin-facing service, not an oversight — but it means atlas is not safe to expose
   to untrusted or mutually-distrusting callers as-is.
 - **No write sharding.** There's one primary accepting all writes (plus one read
   replica - see "Read replicas" above). `SELECT ... FOR UPDATE SKIP LOCKED` leasing is

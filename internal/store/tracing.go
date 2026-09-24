@@ -20,7 +20,7 @@ type otelQueryTracer struct {
 type traceCtxKey struct{}
 
 func newOtelQueryTracer() *otelQueryTracer {
-	return &otelQueryTracer{tracer: otel.Tracer("taskflow/store")}
+	return &otelQueryTracer{tracer: otel.Tracer("atlas/store")}
 }
 
 func (t *otelQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {

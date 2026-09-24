@@ -11,9 +11,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/robfig/cron/v3"
 
-	"github.com/manavsingla/taskflow/internal/metrics"
-	"github.com/manavsingla/taskflow/internal/model"
-	"github.com/manavsingla/taskflow/internal/store"
+	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/model"
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
 const (

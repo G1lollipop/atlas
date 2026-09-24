@@ -1,4 +1,4 @@
-// api_smoke.js — smoke/load test for POST /v1/jobs against a taskflow deployment
+// api_smoke.js — smoke/load test for POST /v1/jobs against a atlas deployment
 // started via docker-compose (the api service listens on http://localhost:8080).
 //
 // Run with:
@@ -6,7 +6,7 @@
 //
 // Auth: the API requires a valid "Authorization: Bearer <JWT>" header on all /v1/*
 // routes (see internal/api/auth.go, internal/api/router.go). This script reads the
-// token from the TASKFLOW_TOKEN environment variable rather than minting one itself,
+// token from the ATLAS_TOKEN environment variable rather than minting one itself,
 // since minting requires the deployment's JWT_SECRET (see docker-compose.yml /
 // k8s/secret.yaml), which this script has no business knowing. There is no CLI for
 // this yet — internal/api/auth.go exposes a MintToken(secret, subject, ttl) helper
@@ -14,9 +14,9 @@
 // command (out of scope for this load test) to produce a JWT signed with the
 // deployment's JWT_SECRET, then export it:
 //
-//     TASKFLOW_TOKEN=<jwt> k6 run loadtest/api_smoke.js
+//     ATLAS_TOKEN=<jwt> k6 run loadtest/api_smoke.js
 //
-// Optionally override the target host with TASKFLOW_BASE_URL (defaults to
+// Optionally override the target host with ATLAS_BASE_URL (defaults to
 // http://localhost:8080, matching the "api" service's published port in
 // docker-compose.yml).
 
@@ -24,12 +24,12 @@ import http from "k6/http";
 import { check } from "k6";
 import { Rate, Trend } from "k6/metrics";
 
-const BASE_URL = __ENV.TASKFLOW_BASE_URL || "http://localhost:8080";
-const TOKEN = __ENV.TASKFLOW_TOKEN;
+const BASE_URL = __ENV.ATLAS_BASE_URL || "http://localhost:8080";
+const TOKEN = __ENV.ATLAS_TOKEN;
 
 if (!TOKEN) {
   throw new Error(
-    "TASKFLOW_TOKEN env var must be set to a valid JWT for the deployment's JWT_SECRET " +
+    "ATLAS_TOKEN env var must be set to a valid JWT for the deployment's JWT_SECRET " +
       "(see the comment at the top of this file for how to mint one)."
   );
 }

@@ -11,18 +11,18 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: taskflow
-          POSTGRES_PASSWORD: taskflow
-          POSTGRES_DB: taskflow
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U taskflow -d taskflow"
+          --health-cmd "pg_isready -U atlas -d atlas"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgres://taskflow:taskflow@localhost:5432/taskflow?sslmode=disable
+      DATABASE_URL: postgres://atlas:atlas@localhost:5432/atlas?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

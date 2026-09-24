@@ -1,0 +1,6 @@
+.git
+.baseline
+.env
+*.log
+**/*.log
+coverage.out

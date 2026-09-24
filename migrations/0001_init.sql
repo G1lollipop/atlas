@@ -1,4 +1,4 @@
--- taskflow core schema
+-- atlas core schema
 -- Design notes:
 --   * job_runs.status transitions: pending -> leased -> running -> (succeeded|failed) -> (dead if attempts exhausted)
 --   * Leasing uses SELECT ... FOR UPDATE SKIP LOCKED (see internal/worker) instead of a separate broker.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/manavsingla/taskflow/internal/model"
+	"github.com/G1lollipop/atlas/internal/model"
 )
 
 const testSecret = "handler-test-secret"

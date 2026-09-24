@@ -19,7 +19,7 @@ variable "subnet_ids" {
 }
 
 variable "ecr_repo_url" {
-  description = "Base ECR repo URL, e.g. <account_id>.dkr.ecr.<region>.amazonaws.com/taskflow"
+  description = "Base ECR repo URL, e.g. <account_id>.dkr.ecr.<region>.amazonaws.com/atlas"
   type        = string
 }
 
@@ -30,7 +30,7 @@ variable "image_tag" {
 
 variable "db_username" {
   type    = string
-  default = "taskflow"
+  default = "atlas"
 }
 
 variable "db_password" {

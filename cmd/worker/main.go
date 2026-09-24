@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/manavsingla/taskflow/internal/config"
-	"github.com/manavsingla/taskflow/internal/logger"
-	"github.com/manavsingla/taskflow/internal/metrics"
-	"github.com/manavsingla/taskflow/internal/store"
-	"github.com/manavsingla/taskflow/internal/tracing"
-	"github.com/manavsingla/taskflow/internal/worker"
+	"github.com/G1lollipop/atlas/internal/config"
+	"github.com/G1lollipop/atlas/internal/logger"
+	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/store"
+	"github.com/G1lollipop/atlas/internal/tracing"
+	"github.com/G1lollipop/atlas/internal/worker"
 )
 
 func main() {

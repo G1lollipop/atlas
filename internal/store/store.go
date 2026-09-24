@@ -9,7 +9,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/manavsingla/taskflow/internal/model"
+	"github.com/G1lollipop/atlas/internal/model"
 )
 
 // ErrNotFound is returned by Get*/single-row lookups when nothing matches.
@@ -61,7 +61,7 @@ type Store interface {
 
 	GetRun(ctx context.Context, id string) (*model.JobRun, error)
 	ListJobRuns(ctx context.Context, jobID string, limit int) ([]*model.JobRun, error)
-	// CountPendingRuns is used to publish the taskflow_queue_depth gauge.
+	// CountPendingRuns is used to publish the atlas_queue_depth gauge.
 	CountPendingRuns(ctx context.Context) (int, error)
 
 	// --- Workers ---

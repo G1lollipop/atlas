@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: taskflow API
+  title: atlas API
   description: >
     Distributed job scheduler API. Submit one-shot or cron-recurring jobs (optionally
     depending on other jobs as a DAG), inspect their runs, and manage the worker fleet.
