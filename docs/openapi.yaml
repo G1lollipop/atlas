@@ -244,7 +244,7 @@ paths:
   /v1/workers:
     get:
       operationId: listWorkers
-      summary: List known workers and their last heartbeat
+      summary: List known workers and their last heartbeat and resource capability
       responses:
         "200":
           description: Workers
@@ -330,6 +330,44 @@ components:
           format: int16
           default: 0
           description: Higher runs first
+        workload_type:
+          type: string
+          default: generic
+          description: Workload class used for observability and scheduling policy.
+          example: embedding
+        required_cpu_millis:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 0
+          description: CPU request in millicores (2000 is two CPU cores).
+          example: 2000
+        required_memory_mb:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 0
+          description: Requested host memory in megabytes.
+          example: 4096
+        required_gpu_count:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 0
+          description: Number of GPUs requested. CPU-only jobs use zero.
+          example: 1
+        required_gpu_memory_mb:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 0
+          description: GPU memory requested in megabytes; requires required_gpu_count greater than zero.
+          example: 16384
+        required_accelerator:
+          type: string
+          default: ""
+          description: Optional accelerator type selector; requires required_gpu_count greater than zero.
+          example: nvidia-h100
         max_attempts:
           type: integer
           format: int16
@@ -429,9 +467,60 @@ components:
         status:
           type: string
           enum: [alive, dead]
-        last_heartbeat:
+        last_heartbeat_at:
           type: string
           format: date-time
         started_at:
           type: string
           format: date-time
+        cpu_capacity:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Total CPU capacity in millicores (4000 is four CPU cores).
+        memory_capacity_mb:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Total host memory capacity in megabytes.
+        gpu_count:
+          type: integer
+          format: int32
+          minimum: 0
+        gpu_type:
+          type: string
+        gpu_memory_mb:
+          type: integer
+          format: int32
+          minimum: 0
+          description: GPU memory capacity in megabytes.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        current_cpu_reserved:
+          type: integer
+          format: int64
+          description: CPU millicores currently reserved by leased/running work.
+        current_memory_reserved:
+          type: integer
+          format: int64
+          description: Host memory megabytes currently reserved by leased/running work.
+        current_gpu_reserved:
+          type: integer
+          format: int64
+        current_gpu_memory_reserved:
+          type: integer
+          format: int64
+        available_cpu_millis:
+          type: integer
+          format: int64
+        available_memory_mb:
+          type: integer
+          format: int64
+        available_gpu_count:
+          type: integer
+          format: int64
+        available_gpu_memory_mb:
+          type: integer
+          format: int64

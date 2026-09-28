@@ -27,18 +27,24 @@ const (
 // Job is a job definition: either a one-shot task or a recurring (cron_expr set) template.
 // Each time a Job becomes eligible to run, a JobRun is created for it.
 type Job struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Payload        map[string]any `json:"payload"`
-	CronExpr       *string        `json:"cron_expr,omitempty"`
-	Priority       int16          `json:"priority"`
-	MaxAttempts    int16          `json:"max_attempts"`
-	TimeoutSeconds int32          `json:"timeout_seconds"`
-	Status         JobStatus      `json:"status"`
-	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
-	DependsOn      []string       `json:"depends_on,omitempty"` // job IDs this job's runs must wait on
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	ID                  string         `json:"id"`
+	Name                string         `json:"name"`
+	Payload             map[string]any `json:"payload"`
+	CronExpr            *string        `json:"cron_expr,omitempty"`
+	Priority            int16          `json:"priority"`
+	WorkloadType        string         `json:"workload_type"`
+	RequiredCPUMillis   int32          `json:"required_cpu_millis"`
+	RequiredMemoryMB    int32          `json:"required_memory_mb"`
+	RequiredGPUCount    int32          `json:"required_gpu_count"`
+	RequiredGPUMemoryMB int32          `json:"required_gpu_memory_mb"`
+	RequiredAccelerator string         `json:"required_accelerator"`
+	MaxAttempts         int16          `json:"max_attempts"`
+	TimeoutSeconds      int32          `json:"timeout_seconds"`
+	Status              JobStatus      `json:"status"`
+	IdempotencyKey      *string        `json:"idempotency_key,omitempty"`
+	DependsOn           []string       `json:"depends_on,omitempty"` // job IDs this job's runs must wait on
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
 }
 
 // JobRun is a single execution attempt (or series of attempts) of a Job.
@@ -67,11 +73,25 @@ const (
 )
 
 type Worker struct {
-	ID            string       `json:"id"`
-	Hostname      string       `json:"hostname"`
-	Status        WorkerStatus `json:"status"`
-	LastHeartbeat time.Time    `json:"last_heartbeat"`
-	StartedAt     time.Time    `json:"started_at"`
+	ID                       string            `json:"id"`
+	Hostname                 string            `json:"hostname"`
+	Status                   WorkerStatus      `json:"status"`
+	LastHeartbeatAt          time.Time         `json:"last_heartbeat_at"`
+	StartedAt                time.Time         `json:"started_at"`
+	CPUCapacity              int32             `json:"cpu_capacity"`
+	MemoryCapacityMB         int32             `json:"memory_capacity_mb"`
+	GPUCount                 int32             `json:"gpu_count"`
+	GPUType                  string            `json:"gpu_type"`
+	GPUMemoryMB              int32             `json:"gpu_memory_mb"`
+	Labels                   map[string]string `json:"labels"`
+	CurrentCPUReserved       int64             `json:"current_cpu_reserved"`
+	CurrentMemoryReserved    int64             `json:"current_memory_reserved"`
+	CurrentGPUReserved       int64             `json:"current_gpu_reserved"`
+	CurrentGPUMemoryReserved int64             `json:"current_gpu_memory_reserved"`
+	AvailableCPUMillis       int64             `json:"available_cpu_millis"`
+	AvailableMemoryMB        int64             `json:"available_memory_mb"`
+	AvailableGPUCount        int64             `json:"available_gpu_count"`
+	AvailableGPUMemoryMB     int64             `json:"available_gpu_memory_mb"`
 }
 
 type DeadLetter struct {
@@ -86,12 +106,18 @@ type DeadLetter struct {
 // kept distinct from the persisted Job/JobRun so server-assigned fields (ID, timestamps)
 // can't be forged by a caller.
 type NewJobInput struct {
-	Name           string         `json:"name"`
-	Payload        map[string]any `json:"payload"`
-	CronExpr       *string        `json:"cron_expr,omitempty"`
-	Priority       int16          `json:"priority"`
-	MaxAttempts    int16          `json:"max_attempts"`
-	TimeoutSeconds int32          `json:"timeout_seconds"`
-	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
-	DependsOn      []string       `json:"depends_on,omitempty"`
+	Name                string         `json:"name"`
+	Payload             map[string]any `json:"payload"`
+	CronExpr            *string        `json:"cron_expr,omitempty"`
+	Priority            int16          `json:"priority"`
+	WorkloadType        string         `json:"workload_type,omitempty"`
+	RequiredCPUMillis   int32          `json:"required_cpu_millis,omitempty"`
+	RequiredMemoryMB    int32          `json:"required_memory_mb,omitempty"`
+	RequiredGPUCount    int32          `json:"required_gpu_count,omitempty"`
+	RequiredGPUMemoryMB int32          `json:"required_gpu_memory_mb,omitempty"`
+	RequiredAccelerator string         `json:"required_accelerator,omitempty"`
+	MaxAttempts         int16          `json:"max_attempts"`
+	TimeoutSeconds      int32          `json:"timeout_seconds"`
+	IdempotencyKey      *string        `json:"idempotency_key,omitempty"`
+	DependsOn           []string       `json:"depends_on,omitempty"`
 }

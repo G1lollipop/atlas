@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/G1lollipop/atlas/internal/model"
 )
@@ -36,6 +37,12 @@ func TestExecuteOne_Success(t *testing.T) {
 	}
 	if fs.completeRunCalls[0].runID != "run-1" {
 		t.Errorf("CompleteRun called with runID %q, want %q", fs.completeRunCalls[0].runID, "run-1")
+	}
+	if fs.completeRunCalls[0].workerID != "test-worker" || fs.markRunningWorkerIDs[0] != "test-worker" {
+		t.Errorf("worker ownership = complete %q, start %q, want test-worker", fs.completeRunCalls[0].workerID, fs.markRunningWorkerIDs[0])
+	}
+	if fs.completeRunCalls[0].attempt != 1 || fs.markRunningAttempts[0] != 1 {
+		t.Errorf("attempt fence = complete %d, start %d, want 1", fs.completeRunCalls[0].attempt, fs.markRunningAttempts[0])
 	}
 	if len(fs.failRunCalls) != 0 {
 		t.Errorf("expected FailRun not to be called, got %d calls", len(fs.failRunCalls))
@@ -71,6 +78,12 @@ func TestExecuteOne_FailureWithAttemptsRemaining(t *testing.T) {
 	fc := fs.failRunCalls[0]
 	if fc.runID != "run-1" {
 		t.Errorf("FailRun called with runID %q, want %q", fc.runID, "run-1")
+	}
+	if fc.workerID != "test-worker" {
+		t.Errorf("FailRun called with workerID %q, want test-worker", fc.workerID)
+	}
+	if fc.attempt != 1 {
+		t.Errorf("FailRun called with attempt %d, want 1", fc.attempt)
 	}
 	if !fc.requeue {
 		t.Error("expected FailRun to be called with requeue=true when attempts remain")
@@ -133,5 +146,177 @@ func TestExecuteOne_NoHandlerRegistered(t *testing.T) {
 	}
 	if len(fs.markRunningCalls) != 0 {
 		t.Errorf("expected MarkRunning not to be called for missing handler, got %d calls", len(fs.markRunningCalls))
+	}
+}
+
+func TestExecuteOneRenewsLeaseForLongRunningHandler(t *testing.T) {
+	fs := newFakeStore()
+	p := newTestPool(fs)
+	p.LeaseDuration = 60 * time.Millisecond
+	p.RegisterHandler("slow-job", func(ctx context.Context, job *model.Job, run *model.JobRun) (map[string]any, error) {
+		select {
+		case <-time.After(140 * time.Millisecond):
+			return map[string]any{"done": true}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	job := &model.Job{ID: "job-1", Name: "slow-job", MaxAttempts: 3, TimeoutSeconds: 2}
+	run := &model.JobRun{ID: "run-1", JobID: "job-1", Attempt: 1}
+	p.executeOne(context.Background(), run, job)
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.extendLeaseCalls) < 2 {
+		t.Fatalf("ExtendLease calls = %d, want repeated renewal during the handler", len(fs.extendLeaseCalls))
+	}
+	for _, call := range fs.extendLeaseCalls {
+		if call.runID != "run-1" || call.workerID != "test-worker" || call.attempt != 1 || call.leaseDuration != p.LeaseDuration {
+			t.Errorf("ExtendLease call = %#v, want run-1/test-worker/attempt-1/%s", call, p.LeaseDuration)
+		}
+	}
+}
+
+func TestExecuteOneAbortsWhenMarkRunningFails(t *testing.T) {
+	fs := newFakeStore()
+	fs.markRunningErr = errors.New("lease ownership was lost")
+	p := newTestPool(fs)
+	handlerCalls := 0
+	p.RegisterHandler("job", func(ctx context.Context, job *model.Job, run *model.JobRun) (map[string]any, error) {
+		handlerCalls++
+		return nil, nil
+	})
+
+	p.executeOne(context.Background(), &model.JobRun{ID: "run-1"}, &model.Job{ID: "job-1", Name: "job", TimeoutSeconds: 5})
+
+	if handlerCalls != 0 {
+		t.Errorf("handler calls = %d, want 0 after MarkRunning failure", handlerCalls)
+	}
+	if len(fs.completeRunCalls) != 0 || len(fs.failRunCalls) != 0 || len(fs.extendLeaseCalls) != 0 {
+		t.Errorf("run lifecycle continued after MarkRunning failure: complete=%d fail=%d extend=%d", len(fs.completeRunCalls), len(fs.failRunCalls), len(fs.extendLeaseCalls))
+	}
+}
+
+func TestExecuteOneAbortsStaleAttemptBeforeCallingHandler(t *testing.T) {
+	fs := newFakeStore()
+	fs.fenceAttempts = true
+	fs.currentAttempt = 2
+	p := newTestPool(fs)
+	handlerCalls := 0
+	p.RegisterHandler("job", func(ctx context.Context, job *model.Job, run *model.JobRun) (map[string]any, error) {
+		handlerCalls++
+		return nil, nil
+	})
+
+	p.executeOne(context.Background(), &model.JobRun{ID: "run-1", Attempt: 1}, &model.Job{ID: "job-1", Name: "job", TimeoutSeconds: 5})
+
+	if handlerCalls != 0 {
+		t.Errorf("handler calls = %d, want 0 after stale attempt was rejected", handlerCalls)
+	}
+	if len(fs.markRunningAttempts) != 1 || fs.markRunningAttempts[0] != 1 {
+		t.Errorf("MarkRunning attempts = %v, want [1]", fs.markRunningAttempts)
+	}
+}
+
+func TestExecuteOneDoesNotMarkDeadWhenFailRunFails(t *testing.T) {
+	fs := newFakeStore()
+	fs.failRunErr = errors.New("lease ownership was lost")
+	p := newTestPool(fs)
+	p.RegisterHandler("job", func(ctx context.Context, job *model.Job, run *model.JobRun) (map[string]any, error) {
+		return nil, errors.New("handler failed")
+	})
+
+	p.executeOne(context.Background(), &model.JobRun{ID: "run-1", Attempt: 1}, &model.Job{ID: "job-1", Name: "job", MaxAttempts: 1, TimeoutSeconds: 5})
+
+	if len(fs.failRunCalls) != 1 {
+		t.Fatalf("FailRun calls = %d, want 1", len(fs.failRunCalls))
+	}
+	if len(fs.markDeadCalls) != 0 {
+		t.Errorf("MarkDead calls = %d, want 0 after FailRun failed", len(fs.markDeadCalls))
+	}
+}
+
+func TestExecuteOneDoesNotReportSuccessWhenCompleteRunFails(t *testing.T) {
+	fs := newFakeStore()
+	fs.completeRunErr = errors.New("run lease was lost before completion")
+	p := newTestPool(fs)
+	p.RegisterHandler("job", func(ctx context.Context, job *model.Job, run *model.JobRun) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
+	})
+
+	p.executeOne(context.Background(), &model.JobRun{ID: "run-1", Attempt: 1}, &model.Job{ID: "job-1", Name: "job", MaxAttempts: 1, TimeoutSeconds: 5})
+
+	if len(fs.completeRunCalls) != 1 {
+		t.Fatalf("CompleteRun calls = %d, want 1 failed transition attempt", len(fs.completeRunCalls))
+	}
+	if len(fs.failRunCalls) != 0 || len(fs.markDeadCalls) != 0 {
+		t.Errorf("lifecycle calls after CompleteRun error = fail:%d dead:%d, want both zero", len(fs.failRunCalls), len(fs.markDeadCalls))
+	}
+}
+
+func TestRunRegistersCapabilitiesAndRetriesBeforeLeasing(t *testing.T) {
+	fs := newFakeStore()
+	fs.upsertErrors = []error{errors.New("temporary registration failure")}
+	fs.leaseNotify = make(chan struct{}, 1)
+	p := NewPool(fs, "gpu-worker-1", 1, time.Second, 10*time.Millisecond, testLogger())
+	p.SetCapabilities(model.Worker{
+		CPUCapacity:      8000,
+		MemoryCapacityMB: 32768,
+		GPUCount:         1,
+		GPUType:          "H100",
+		GPUMemoryMB:      81920,
+		Labels:           map[string]string{"region": "us-central"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+
+	select {
+	case <-fs.leaseNotify:
+		cancel()
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("worker did not begin polling after successful registration")
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Pool.Run() error = %v, want context.Canceled", err)
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	var successfulRegistrationIndex, firstLeaseIndex = -1, -1
+	heartbeatCount := 0
+	for i, event := range fs.operationOrder {
+		if event == "heartbeat" {
+			// The fake store fails only the first heartbeat; the second must
+			// complete before any lease call is allowed.
+			heartbeatCount++
+			if heartbeatCount == 2 {
+				successfulRegistrationIndex = i
+			}
+		} else if event == "lease" && firstLeaseIndex < 0 {
+			firstLeaseIndex = i
+		}
+	}
+	if len(fs.heartbeatCalls) < 2 {
+		t.Fatalf("registration attempts = %d, want failed attempt plus successful retry", len(fs.heartbeatCalls))
+	}
+	if successfulRegistrationIndex < 0 || firstLeaseIndex <= successfulRegistrationIndex {
+		t.Fatalf("operation order = %v, want successful registration before first lease", fs.operationOrder)
+	}
+	registered := fs.heartbeatCalls[1]
+	if registered.ID != "gpu-worker-1" || registered.Hostname == "" || registered.Status != model.WorkerStatusAlive {
+		t.Errorf("registered identity = %#v, want alive gpu-worker-1 with hostname", registered)
+	}
+	if registered.CPUCapacity != 8000 || registered.MemoryCapacityMB != 32768 || registered.GPUCount != 1 || registered.GPUType != "H100" || registered.GPUMemoryMB != 81920 {
+		t.Errorf("registered resources = %#v, want configured CPU/memory/GPU capacities", registered)
+	}
+	if registered.Labels["region"] != "us-central" {
+		t.Errorf("registered labels = %#v, want region label", registered.Labels)
+	}
+	if registered.StartedAt.IsZero() {
+		t.Error("registered worker is missing its process start time")
 	}
 }

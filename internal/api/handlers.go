@@ -58,6 +58,35 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	in.WorkloadType = strings.TrimSpace(in.WorkloadType)
+	if in.WorkloadType == "" {
+		in.WorkloadType = "generic"
+	}
+	in.RequiredAccelerator = strings.TrimSpace(in.RequiredAccelerator)
+	if in.RequiredCPUMillis < 0 {
+		writeError(w, http.StatusBadRequest, "required_cpu_millis must be >= 0")
+		return
+	}
+	if in.RequiredMemoryMB < 0 {
+		writeError(w, http.StatusBadRequest, "required_memory_mb must be >= 0")
+		return
+	}
+	if in.RequiredGPUCount < 0 {
+		writeError(w, http.StatusBadRequest, "required_gpu_count must be >= 0")
+		return
+	}
+	if in.RequiredGPUMemoryMB < 0 {
+		writeError(w, http.StatusBadRequest, "required_gpu_memory_mb must be >= 0")
+		return
+	}
+	if in.RequiredGPUCount == 0 && in.RequiredGPUMemoryMB > 0 {
+		writeError(w, http.StatusBadRequest, "required_gpu_memory_mb requires required_gpu_count > 0")
+		return
+	}
+	if in.RequiredGPUCount == 0 && in.RequiredAccelerator != "" {
+		writeError(w, http.StatusBadRequest, "required_accelerator requires required_gpu_count > 0")
+		return
+	}
 
 	if in.CronExpr != nil {
 		if _, err := cron.ParseStandard(*in.CronExpr); err != nil {

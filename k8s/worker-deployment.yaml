@@ -26,6 +26,19 @@ spec:
                 name: atlas-config
             - secretRef:
                 name: atlas-secrets
+          env:
+            # Advertised capacity matches the container limits below. CPU is
+            # millicores; memory and GPU memory are MB.
+            - name: WORKER_CPU_CAPACITY_MILLIS
+              value: "500"
+            - name: WORKER_MEMORY_CAPACITY_MB
+              value: "256"
+            - name: WORKER_GPU_COUNT
+              value: "0"
+            - name: WORKER_GPU_TYPE
+              value: ""
+            - name: WORKER_GPU_MEMORY_MB
+              value: "0"
           resources:
             requests:
               cpu: 100m

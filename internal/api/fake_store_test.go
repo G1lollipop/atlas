@@ -41,18 +41,24 @@ func (s *fakeStore) CreateJob(ctx context.Context, in model.NewJobInput) (*model
 
 	now := time.Now()
 	job := &model.Job{
-		ID:             uuid.NewString(),
-		Name:           in.Name,
-		Payload:        in.Payload,
-		CronExpr:       in.CronExpr,
-		Priority:       in.Priority,
-		MaxAttempts:    in.MaxAttempts,
-		TimeoutSeconds: in.TimeoutSeconds,
-		Status:         model.JobStatusActive,
-		IdempotencyKey: in.IdempotencyKey,
-		DependsOn:      in.DependsOn,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                  uuid.NewString(),
+		Name:                in.Name,
+		Payload:             in.Payload,
+		CronExpr:            in.CronExpr,
+		Priority:            in.Priority,
+		WorkloadType:        in.WorkloadType,
+		RequiredCPUMillis:   in.RequiredCPUMillis,
+		RequiredMemoryMB:    in.RequiredMemoryMB,
+		RequiredGPUCount:    in.RequiredGPUCount,
+		RequiredGPUMemoryMB: in.RequiredGPUMemoryMB,
+		RequiredAccelerator: in.RequiredAccelerator,
+		MaxAttempts:         in.MaxAttempts,
+		TimeoutSeconds:      in.TimeoutSeconds,
+		Status:              model.JobStatusActive,
+		IdempotencyKey:      in.IdempotencyKey,
+		DependsOn:           in.DependsOn,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	s.jobs[job.ID] = job
 	return job, nil
@@ -122,17 +128,19 @@ func (s *fakeStore) LeaseNextRun(ctx context.Context, workerID string, leaseDura
 	return nil, nil, nil
 }
 
-func (s *fakeStore) ExtendLease(ctx context.Context, runID, workerID string, extend time.Duration) error {
+func (s *fakeStore) ExtendLease(ctx context.Context, runID, workerID string, attempt int16, extend time.Duration) error {
 	return nil
 }
 
-func (s *fakeStore) MarkRunning(ctx context.Context, runID string) error { return nil }
-
-func (s *fakeStore) CompleteRun(ctx context.Context, runID string, result map[string]any) error {
+func (s *fakeStore) MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error {
 	return nil
 }
 
-func (s *fakeStore) FailRun(ctx context.Context, runID string, errMsg string, requeue bool, backoff time.Duration) error {
+func (s *fakeStore) CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error {
+	return nil
+}
+
+func (s *fakeStore) FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error {
 	return nil
 }
 
@@ -161,7 +169,7 @@ func (s *fakeStore) ListJobRuns(ctx context.Context, jobID string, limit int) ([
 
 func (s *fakeStore) CountPendingRuns(ctx context.Context) (int, error) { return 0, nil }
 
-func (s *fakeStore) UpsertWorkerHeartbeat(ctx context.Context, workerID, hostname string) error {
+func (s *fakeStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.Worker) error {
 	return nil
 }
 

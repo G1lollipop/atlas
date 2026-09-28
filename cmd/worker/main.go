@@ -14,6 +14,7 @@ import (
 	"github.com/G1lollipop/atlas/internal/config"
 	"github.com/G1lollipop/atlas/internal/logger"
 	"github.com/G1lollipop/atlas/internal/metrics"
+	"github.com/G1lollipop/atlas/internal/model"
 	"github.com/G1lollipop/atlas/internal/store"
 	"github.com/G1lollipop/atlas/internal/tracing"
 	"github.com/G1lollipop/atlas/internal/worker"
@@ -56,6 +57,14 @@ func main() {
 	}
 
 	pool := worker.NewPool(st, cfg.WorkerID, cfg.Concurrency, cfg.LeaseDuration, cfg.PollInterval, log)
+	pool.SetCapabilities(model.Worker{
+		CPUCapacity:      cfg.WorkerCPUCapacityMillis,
+		MemoryCapacityMB: cfg.WorkerMemoryCapacityMB,
+		GPUCount:         cfg.WorkerGPUCount,
+		GPUType:          cfg.WorkerGPUType,
+		GPUMemoryMB:      cfg.WorkerGPUMemoryMB,
+		Labels:           cfg.WorkerLabels,
+	})
 	pool.RegisterHandler("echo", worker.EchoHandler)
 	pool.RegisterHandler("sleep", worker.SleepHandler)
 	pool.RegisterHandler("http_call", worker.HTTPCallHandler)
@@ -66,7 +75,13 @@ func main() {
 		_ = metricsServer.ListenAndServe()
 	}()
 
-	log.Info("worker starting", "worker_id", cfg.WorkerID, "concurrency", cfg.Concurrency)
+	log.Info("worker starting", "worker_id", cfg.WorkerID, "concurrency", cfg.Concurrency,
+		"cpu_capacity_millis", cfg.WorkerCPUCapacityMillis,
+		"memory_capacity_mb", cfg.WorkerMemoryCapacityMB,
+		"gpu_count", cfg.WorkerGPUCount,
+		"gpu_type", cfg.WorkerGPUType,
+		"gpu_memory_mb", cfg.WorkerGPUMemoryMB,
+		"labels", cfg.WorkerLabels)
 	runErr := pool.Run(ctx)
 	log.Info("worker stopped", "reason", runErr)
 

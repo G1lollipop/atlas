@@ -51,18 +51,24 @@ func (f *fakeStore) CreateJob(ctx context.Context, in model.NewJobInput) (*model
 
 	id := "job-" + in.Name
 	job := &model.Job{
-		ID:             id,
-		Name:           in.Name,
-		Payload:        in.Payload,
-		CronExpr:       in.CronExpr,
-		Priority:       in.Priority,
-		MaxAttempts:    in.MaxAttempts,
-		TimeoutSeconds: in.TimeoutSeconds,
-		Status:         model.JobStatusActive,
-		IdempotencyKey: in.IdempotencyKey,
-		DependsOn:      in.DependsOn,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		ID:                  id,
+		Name:                in.Name,
+		Payload:             in.Payload,
+		CronExpr:            in.CronExpr,
+		Priority:            in.Priority,
+		WorkloadType:        in.WorkloadType,
+		RequiredCPUMillis:   in.RequiredCPUMillis,
+		RequiredMemoryMB:    in.RequiredMemoryMB,
+		RequiredGPUCount:    in.RequiredGPUCount,
+		RequiredGPUMemoryMB: in.RequiredGPUMemoryMB,
+		RequiredAccelerator: in.RequiredAccelerator,
+		MaxAttempts:         in.MaxAttempts,
+		TimeoutSeconds:      in.TimeoutSeconds,
+		Status:              model.JobStatusActive,
+		IdempotencyKey:      in.IdempotencyKey,
+		DependsOn:           in.DependsOn,
+		CreatedAt:           time.Now(),
+		UpdatedAt:           time.Now(),
 	}
 	f.jobs[id] = job
 	if len(in.DependsOn) > 0 {
@@ -207,20 +213,20 @@ func (f *fakeStore) LeaseNextRun(ctx context.Context, workerID string, leaseDura
 	return nil, nil, nil
 }
 
-func (f *fakeStore) ExtendLease(ctx context.Context, runID string, workerID string, extend time.Duration) error {
+func (f *fakeStore) ExtendLease(ctx context.Context, runID, workerID string, attempt int16, extend time.Duration) error {
 	return nil
 }
 
-func (f *fakeStore) MarkRunning(ctx context.Context, runID string) error {
+func (f *fakeStore) MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error {
 	return nil
 }
 
-func (f *fakeStore) CompleteRun(ctx context.Context, runID string, result map[string]any) error {
+func (f *fakeStore) CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error {
 	f.setRunStatus(runID, model.RunStatusSucceeded)
 	return nil
 }
 
-func (f *fakeStore) FailRun(ctx context.Context, runID string, errMsg string, requeue bool, backoff time.Duration) error {
+func (f *fakeStore) FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error {
 	if requeue {
 		f.setRunStatus(runID, model.RunStatusPending)
 	} else {
@@ -275,7 +281,7 @@ func (f *fakeStore) CountPendingRuns(ctx context.Context) (int, error) {
 
 // --- Workers (unused by scheduler; minimal stubs) ---
 
-func (f *fakeStore) UpsertWorkerHeartbeat(ctx context.Context, workerID, hostname string) error {
+func (f *fakeStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.Worker) error {
 	return nil
 }
 

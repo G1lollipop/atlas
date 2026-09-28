@@ -41,19 +41,21 @@ type Store interface {
 	CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (*model.JobRun, error)
 
 	// --- Runs: worker lease lifecycle ---
-	// LeaseNextRun atomically claims the highest-priority, oldest eligible pending run
-	// (implemented via SELECT ... FOR UPDATE SKIP LOCKED) and marks it leased by workerID
-	// until leaseDuration elapses. Returns (nil, nil, nil) if no run is available.
+	// LeaseNextRun atomically claims the highest-priority, oldest pending run whose
+	// resource requirements fit the registered worker's currently available capacity.
+	// Returns (nil, nil, nil) if no eligible run is available.
 	LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (*model.JobRun, *model.Job, error)
-	// ExtendLease pushes lease_expires_at forward; called periodically by the worker
-	// while a run is executing so a slow-but-alive worker isn't reaped.
-	ExtendLease(ctx context.Context, runID string, workerID string, extend time.Duration) error
-	MarkRunning(ctx context.Context, runID string) error
-	CompleteRun(ctx context.Context, runID string, result map[string]any) error
+	// ExtendLease pushes lease_expires_at forward only for the current owner of an
+	// active run; called periodically by the worker while executing.
+	ExtendLease(ctx context.Context, runID, workerID string, attempt int16, extend time.Duration) error
+	// Lifecycle writes are scoped to the worker that owns the live lease, preventing
+	// an expired/reclaimed execution from changing a later attempt's state.
+	MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error
+	CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error
 	// FailRun records an error. If requeue is true the run goes back to pending with
 	// attempt+1 and scheduled_at = now+backoff; otherwise (attempts exhausted) the
 	// caller should follow up with MarkDead.
-	FailRun(ctx context.Context, runID string, errMsg string, requeue bool, backoff time.Duration) error
+	FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error
 	MarkDead(ctx context.Context, runID string, reason string) error
 	// ReclaimExpiredLeases resets any leased/running run whose lease has expired back
 	// to pending (crash recovery for workers that died mid-execution). Returns the count reclaimed.
@@ -65,7 +67,7 @@ type Store interface {
 	CountPendingRuns(ctx context.Context) (int, error)
 
 	// --- Workers ---
-	UpsertWorkerHeartbeat(ctx context.Context, workerID, hostname string) error
+	UpsertWorkerHeartbeat(ctx context.Context, worker model.Worker) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 
 	Close()

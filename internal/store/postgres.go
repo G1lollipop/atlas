@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,7 +15,7 @@ import (
 	"github.com/G1lollipop/atlas/internal/model"
 )
 
-const jobColumns = `id, name, payload, cron_expr, priority, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`
+const jobColumns = `id, name, payload, cron_expr, priority, workload_type, required_cpu_millis, required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`
 
 const runColumns = `id, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, started_at, finished_at, result, error, created_at`
 
@@ -110,8 +111,10 @@ func (s *PostgresStore) readPool() *pgxpool.Pool {
 func scanJobRow(ctx context.Context, q querier, row rowScanner) (*model.Job, error) {
 	var job model.Job
 	var payloadRaw []byte
-	if err := row.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.MaxAttempts,
-		&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.CreatedAt, &job.UpdatedAt); err != nil {
+	if err := row.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+		&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
+		&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
+		&job.CreatedAt, &job.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(payloadRaw, &job.Payload); err != nil {
@@ -179,6 +182,10 @@ func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (*m
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
+	workloadType := strings.TrimSpace(in.WorkloadType)
+	if workloadType == "" {
+		workloadType = "generic"
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -189,12 +196,18 @@ func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (*m
 	var job model.Job
 	var outRaw []byte
 	row := tx.QueryRow(ctx, `
-		INSERT INTO jobs (name, payload, cron_expr, priority, max_attempts, timeout_seconds, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING `+jobColumns, in.Name, payloadRaw, in.CronExpr, in.Priority, in.MaxAttempts, in.TimeoutSeconds, in.IdempotencyKey)
+		INSERT INTO jobs (name, payload, cron_expr, priority, workload_type, required_cpu_millis,
+			required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator,
+			max_attempts, timeout_seconds, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING `+jobColumns, in.Name, payloadRaw, in.CronExpr, in.Priority, workloadType,
+		in.RequiredCPUMillis, in.RequiredMemoryMB, in.RequiredGPUCount, in.RequiredGPUMemoryMB,
+		in.RequiredAccelerator, in.MaxAttempts, in.TimeoutSeconds, in.IdempotencyKey)
 
-	if err := row.Scan(&job.ID, &job.Name, &outRaw, &job.CronExpr, &job.Priority, &job.MaxAttempts,
-		&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.CreatedAt, &job.UpdatedAt); err != nil {
+	if err := row.Scan(&job.ID, &job.Name, &outRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+		&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
+		&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
+		&job.CreatedAt, &job.UpdatedAt); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, ErrIdempotencyConflict
@@ -261,8 +274,10 @@ func (s *PostgresStore) ListJobs(ctx context.Context, status *model.JobStatus, l
 	for rows.Next() {
 		var job model.Job
 		var payloadRaw []byte
-		if err := rows.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.MaxAttempts,
-			&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.CreatedAt, &job.UpdatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
+			&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
+			&job.CreatedAt, &job.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(payloadRaw, &job.Payload); err != nil {
@@ -334,13 +349,59 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Lock this worker before examining capacity. Concurrent pollers for one worker
+	// serialize here, so each later transaction includes the lease committed by the
+	// previous one when it calculates available resources.
+	var worker model.Worker
+	err = tx.QueryRow(ctx, `
+		SELECT cpu_capacity, memory_capacity_mb, gpu_count, gpu_type, gpu_memory_mb
+		FROM workers
+		WHERE id = $1 AND status = 'alive'
+		FOR UPDATE SKIP LOCKED
+	`, workerID).Scan(&worker.CPUCapacity, &worker.MemoryCapacityMB, &worker.GPUCount,
+		&worker.GPUType, &worker.GPUMemoryMB)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+
+	// Reservations are derived from current leases, so terminal runs, retries, and
+	// reclaimed leases release capacity automatically without a second counter to drift.
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(SUM(j.required_cpu_millis), 0)::bigint,
+		       COALESCE(SUM(j.required_memory_mb), 0)::bigint,
+		       COALESCE(SUM(j.required_gpu_count), 0)::bigint,
+		       COALESCE(SUM(j.required_gpu_count::bigint * j.required_gpu_memory_mb::bigint), 0)::bigint
+		FROM job_runs r
+		JOIN jobs j ON j.id = r.job_id
+		WHERE r.leased_by = $1 AND r.status IN ('leased', 'running')
+	`, workerID).Scan(&worker.CurrentCPUReserved, &worker.CurrentMemoryReserved,
+		&worker.CurrentGPUReserved, &worker.CurrentGPUMemoryReserved); err != nil {
+		return nil, nil, err
+	}
+
 	var runID, jobID string
 	err = tx.QueryRow(ctx, `
-		SELECT id, job_id FROM job_runs
-		WHERE status = 'pending' AND scheduled_at <= now()
-		ORDER BY priority DESC, scheduled_at ASC
-		LIMIT 1 FOR UPDATE SKIP LOCKED
-	`).Scan(&runID, &jobID)
+		SELECT r.id, r.job_id
+		FROM job_runs r
+		JOIN jobs j ON j.id = r.job_id
+		WHERE r.status = 'pending' AND r.scheduled_at <= now()
+		  AND j.required_cpu_millis::bigint <= $1::bigint - $2::bigint
+		  AND j.required_memory_mb::bigint <= $3::bigint - $4::bigint
+		  AND j.required_gpu_count::bigint <= $5::bigint - $6::bigint
+		  AND (j.required_gpu_count = 0 OR j.required_gpu_memory_mb <= $7)
+		  AND j.required_gpu_count::bigint * j.required_gpu_memory_mb::bigint <=
+		      ($5::bigint * $7::bigint) - $8::bigint
+		  AND (j.required_accelerator = '' OR lower(btrim(j.required_accelerator)) = lower(btrim($9)))
+		ORDER BY r.priority DESC, r.scheduled_at ASC
+		LIMIT 1
+		FOR UPDATE OF r SKIP LOCKED
+	`, worker.CPUCapacity, worker.CurrentCPUReserved,
+		worker.MemoryCapacityMB, worker.CurrentMemoryReserved,
+		worker.GPUCount, worker.CurrentGPUReserved, worker.GPUMemoryMB,
+		worker.CurrentGPUMemoryReserved, worker.GPUType).Scan(&runID, &jobID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, nil
@@ -373,10 +434,12 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 	return run, job, nil
 }
 
-func (s *PostgresStore) ExtendLease(ctx context.Context, runID string, workerID string, extend time.Duration) error {
+func (s *PostgresStore) ExtendLease(ctx context.Context, runID, workerID string, attempt int16, extend time.Duration) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE job_runs SET lease_expires_at = now() + $1 WHERE id = $2 AND leased_by = $3
-	`, extend, runID, workerID)
+		UPDATE job_runs SET lease_expires_at = now() + $1
+		WHERE id = $2 AND leased_by = $3 AND attempt = $4
+		  AND status IN ('leased', 'running') AND lease_expires_at > now()
+	`, extend, runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
@@ -386,8 +449,12 @@ func (s *PostgresStore) ExtendLease(ctx context.Context, runID string, workerID 
 	return nil
 }
 
-func (s *PostgresStore) MarkRunning(ctx context.Context, runID string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE job_runs SET status = 'running', started_at = now() WHERE id = $1`, runID)
+func (s *PostgresStore) MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE job_runs SET status = 'running', started_at = now()
+		WHERE id = $1 AND leased_by = $2 AND attempt = $3
+		  AND status = 'leased' AND lease_expires_at > now()
+	`, runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
@@ -397,14 +464,18 @@ func (s *PostgresStore) MarkRunning(ctx context.Context, runID string) error {
 	return nil
 }
 
-func (s *PostgresStore) CompleteRun(ctx context.Context, runID string, result map[string]any) error {
+func (s *PostgresStore) CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error {
 	raw, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("marshal result: %w", err)
 	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE job_runs SET status = 'succeeded', finished_at = now(), result = $1 WHERE id = $2
-	`, raw, runID)
+		UPDATE job_runs
+		SET status = 'succeeded', finished_at = now(), result = $1,
+		    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
+		WHERE id = $2 AND leased_by = $3 AND attempt = $4
+		  AND status = 'running' AND lease_expires_at > now()
+	`, raw, runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
@@ -414,7 +485,7 @@ func (s *PostgresStore) CompleteRun(ctx context.Context, runID string, result ma
 	return nil
 }
 
-func (s *PostgresStore) FailRun(ctx context.Context, runID string, errMsg string, requeue bool, backoff time.Duration) error {
+func (s *PostgresStore) FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error {
 	var tag pgconn.CommandTag
 	var err error
 	if requeue {
@@ -422,12 +493,17 @@ func (s *PostgresStore) FailRun(ctx context.Context, runID string, errMsg string
 			UPDATE job_runs
 			SET status = 'pending', scheduled_at = now() + $1, error = $2,
 			    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
-			WHERE id = $3
-		`, backoff, errMsg, runID)
+			WHERE id = $3 AND leased_by = $4 AND attempt = $5
+			  AND status IN ('leased', 'running') AND lease_expires_at > now()
+		`, backoff, errMsg, runID, workerID, attempt)
 	} else {
 		tag, err = s.pool.Exec(ctx, `
-			UPDATE job_runs SET status = 'failed', finished_at = now(), error = $1 WHERE id = $2
-		`, errMsg, runID)
+			UPDATE job_runs
+			SET status = 'failed', finished_at = now(), error = $1,
+			    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
+			WHERE id = $2 AND leased_by = $3 AND attempt = $4
+			  AND status IN ('leased', 'running') AND lease_expires_at > now()
+		`, errMsg, runID, workerID, attempt)
 	}
 	if err != nil {
 		return err
@@ -445,15 +521,18 @@ func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason strin
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	run, err := fetchRun(ctx, tx, runID)
+	lockedRun, err := scanRun(tx.QueryRow(ctx, `SELECT `+runColumns+` FROM job_runs WHERE id = $1 FOR UPDATE`, runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		return err
 	}
+	if lockedRun.Status != model.RunStatusFailed {
+		return ErrNotFound
+	}
 
-	payloadRaw, err := json.Marshal(map[string]any{"result": run.Result, "error": run.Error})
+	payloadRaw, err := json.Marshal(map[string]any{"result": lockedRun.Result, "error": lockedRun.Error})
 	if err != nil {
 		return fmt.Errorf("marshal dead letter payload: %w", err)
 	}
@@ -464,8 +543,12 @@ func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason strin
 		return err
 	}
 
-	if _, err := tx.Exec(ctx, `UPDATE job_runs SET status = 'dead' WHERE id = $1`, runID); err != nil {
+	tag, err := tx.Exec(ctx, `UPDATE job_runs SET status = 'dead' WHERE id = $1 AND status = 'failed'`, runID)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 
 	return tx.Commit(ctx)
@@ -529,17 +612,58 @@ func (s *PostgresStore) CountPendingRuns(ctx context.Context) (int, error) {
 	return count, err
 }
 
-func (s *PostgresStore) UpsertWorkerHeartbeat(ctx context.Context, workerID, hostname string) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO workers (id, hostname, last_heartbeat, status)
-		VALUES ($1, $2, now(), 'alive')
-		ON CONFLICT (id) DO UPDATE SET hostname = EXCLUDED.hostname, last_heartbeat = now(), status = 'alive'
-	`, workerID, hostname)
+func (s *PostgresStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.Worker) error {
+	labels, err := json.Marshal(worker.Labels)
+	if err != nil {
+		return fmt.Errorf("marshal worker labels: %w", err)
+	}
+	if len(labels) == 0 || string(labels) == "null" {
+		labels = []byte(`{}`)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO workers (
+			id, hostname, status, last_heartbeat_at, cpu_capacity, memory_capacity_mb,
+			gpu_count, gpu_type, gpu_memory_mb, labels
+		)
+		VALUES ($1, $2, 'alive', now(), $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id) DO UPDATE SET
+			hostname = EXCLUDED.hostname,
+			status = 'alive',
+			last_heartbeat_at = now(),
+			cpu_capacity = EXCLUDED.cpu_capacity,
+			memory_capacity_mb = EXCLUDED.memory_capacity_mb,
+			gpu_count = EXCLUDED.gpu_count,
+			gpu_type = EXCLUDED.gpu_type,
+			gpu_memory_mb = EXCLUDED.gpu_memory_mb,
+			labels = EXCLUDED.labels
+	`, worker.ID, worker.Hostname, worker.CPUCapacity, worker.MemoryCapacityMB,
+		worker.GPUCount, worker.GPUType, worker.GPUMemoryMB, labels)
 	return err
 }
 
 func (s *PostgresStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {
-	rows, err := s.readPool().Query(ctx, `SELECT id, hostname, status, last_heartbeat, started_at FROM workers ORDER BY id`)
+	// Availability must reflect primary-side lease changes immediately; using a
+	// potentially lagging read replica could advertise resources already reserved.
+	rows, err := s.pool.Query(ctx, `
+		SELECT w.id, w.hostname, w.status, w.last_heartbeat_at, w.started_at,
+		       w.cpu_capacity, w.memory_capacity_mb, w.gpu_count, w.gpu_type,
+		       w.gpu_memory_mb, w.labels,
+		       COALESCE(res.cpu_reserved, 0)::bigint,
+		       COALESCE(res.memory_reserved, 0)::bigint,
+		       COALESCE(res.gpu_reserved, 0)::bigint,
+		       COALESCE(res.gpu_memory_reserved, 0)::bigint
+		FROM workers w
+		LEFT JOIN LATERAL (
+			SELECT SUM(j.required_cpu_millis)::bigint AS cpu_reserved,
+			       SUM(j.required_memory_mb)::bigint AS memory_reserved,
+			       SUM(j.required_gpu_count)::bigint AS gpu_reserved,
+			       SUM(j.required_gpu_count::bigint * j.required_gpu_memory_mb::bigint)::bigint AS gpu_memory_reserved
+			FROM job_runs r
+			JOIN jobs j ON j.id = r.job_id
+			WHERE r.leased_by = w.id AND r.status IN ('leased', 'running')
+		) res ON TRUE
+		ORDER BY w.id
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -548,10 +672,27 @@ func (s *PostgresStore) ListWorkers(ctx context.Context) ([]*model.Worker, error
 	var workers []*model.Worker
 	for rows.Next() {
 		var w model.Worker
-		if err := rows.Scan(&w.ID, &w.Hostname, &w.Status, &w.LastHeartbeat, &w.StartedAt); err != nil {
+		var labels []byte
+		if err := rows.Scan(&w.ID, &w.Hostname, &w.Status, &w.LastHeartbeatAt, &w.StartedAt,
+			&w.CPUCapacity, &w.MemoryCapacityMB, &w.GPUCount, &w.GPUType, &w.GPUMemoryMB, &labels,
+			&w.CurrentCPUReserved, &w.CurrentMemoryReserved, &w.CurrentGPUReserved, &w.CurrentGPUMemoryReserved); err != nil {
 			return nil, err
 		}
+		if err := json.Unmarshal(labels, &w.Labels); err != nil {
+			return nil, fmt.Errorf("unmarshal worker labels: %w", err)
+		}
+		w.AvailableCPUMillis = maxInt64(0, int64(w.CPUCapacity)-w.CurrentCPUReserved)
+		w.AvailableMemoryMB = maxInt64(0, int64(w.MemoryCapacityMB)-w.CurrentMemoryReserved)
+		w.AvailableGPUCount = maxInt64(0, int64(w.GPUCount)-w.CurrentGPUReserved)
+		w.AvailableGPUMemoryMB = maxInt64(0, int64(w.GPUCount)*int64(w.GPUMemoryMB)-w.CurrentGPUMemoryReserved)
 		workers = append(workers, &w)
 	}
 	return workers, rows.Err()
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

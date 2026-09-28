@@ -62,8 +62,16 @@ func TestCreateJob_Validation(t *testing.T) {
 		{"max_attempts zero defaults, is valid", map[string]any{"name": "echo", "max_attempts": 0}, http.StatusCreated},
 		{"negative max_attempts rejected", map[string]any{"name": "echo", "max_attempts": -1}, http.StatusBadRequest},
 		{"negative timeout_seconds rejected", map[string]any{"name": "echo", "timeout_seconds": -5}, http.StatusBadRequest},
+		{"negative required_cpu_millis rejected", map[string]any{"name": "embed", "required_cpu_millis": -1}, http.StatusBadRequest},
+		{"negative required_memory_mb rejected", map[string]any{"name": "embed", "required_memory_mb": -1}, http.StatusBadRequest},
+		{"negative required_gpu_count rejected", map[string]any{"name": "infer", "required_gpu_count": -1}, http.StatusBadRequest},
+		{"negative required_gpu_memory_mb rejected", map[string]any{"name": "infer", "required_gpu_count": 1, "required_gpu_memory_mb": -1}, http.StatusBadRequest},
+		{"gpu memory requires a gpu", map[string]any{"name": "infer", "required_gpu_memory_mb": 16000}, http.StatusBadRequest},
+		{"accelerator requires a gpu", map[string]any{"name": "infer", "required_accelerator": " nvidia "}, http.StatusBadRequest},
 		{"valid minimal job", map[string]any{"name": "echo"}, http.StatusCreated},
 		{"valid cron job", map[string]any{"name": "echo", "cron_expr": "*/5 * * * *"}, http.StatusCreated},
+		{"valid cpu workload", map[string]any{"name": "embed", "workload_type": " embedding ", "required_cpu_millis": 2000, "required_memory_mb": 4096}, http.StatusCreated},
+		{"valid gpu workload", map[string]any{"name": "infer", "workload_type": " inference ", "required_gpu_count": 1, "required_gpu_memory_mb": 16384, "required_accelerator": " nvidia "}, http.StatusCreated},
 	}
 
 	for _, tt := range tests {
@@ -92,6 +100,35 @@ func TestCreateJob_Defaults(t *testing.T) {
 	}
 	if job.TimeoutSeconds != 300 {
 		t.Errorf("timeout_seconds default = %d, want 300", job.TimeoutSeconds)
+	}
+	if job.WorkloadType != "generic" {
+		t.Errorf("workload_type default = %q, want %q", job.WorkloadType, "generic")
+	}
+	if job.RequiredCPUMillis != 0 || job.RequiredMemoryMB != 0 || job.RequiredGPUCount != 0 || job.RequiredGPUMemoryMB != 0 || job.RequiredAccelerator != "" {
+		t.Errorf("resource requirements default = cpu:%d memory:%d gpu:%d gpu_memory:%d accelerator:%q, want zero values", job.RequiredCPUMillis, job.RequiredMemoryMB, job.RequiredGPUCount, job.RequiredGPUMemoryMB, job.RequiredAccelerator)
+	}
+}
+
+func TestCreateJob_ResourceRequirementsAreNormalizedAndPersisted(t *testing.T) {
+	router, token := newTestRouter(t)
+	rec := doRequest(t, router, http.MethodPost, "/v1/jobs", token, map[string]any{
+		"name":                   "infer",
+		"workload_type":          "  inference  ",
+		"required_cpu_millis":    500,
+		"required_memory_mb":     2048,
+		"required_gpu_count":     1,
+		"required_gpu_memory_mb": 16384,
+		"required_accelerator":   "  nvidia-h100  ",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if job.WorkloadType != "inference" || job.RequiredCPUMillis != 500 || job.RequiredMemoryMB != 2048 || job.RequiredGPUCount != 1 || job.RequiredGPUMemoryMB != 16384 || job.RequiredAccelerator != "nvidia-h100" {
+		t.Errorf("resource requirements = %+v, request values should be trimmed and retained", job)
 	}
 }
 

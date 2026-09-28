@@ -16,22 +16,38 @@ import (
 type fakeStore struct {
 	mu sync.Mutex
 
-	markRunningCalls []string
-	completeRunCalls []completeRunCall
-	failRunCalls     []failRunCall
-	markDeadCalls    []markDeadCall
+	markRunningCalls     []string
+	markRunningWorkerIDs []string
+	markRunningAttempts  []int16
+	completeRunCalls     []completeRunCall
+	failRunCalls         []failRunCall
+	markDeadCalls        []markDeadCall
+	heartbeatCalls       []model.Worker
+	extendLeaseCalls     []extendLeaseCall
+	operationOrder       []string
+	upsertErrors         []error
+	leaseNotify          chan struct{}
+	markRunningErr       error
+	failRunErr           error
+	completeRunErr       error
+	fenceAttempts        bool
+	currentAttempt       int16
 }
 
 type completeRunCall struct {
-	runID  string
-	result map[string]any
+	runID    string
+	workerID string
+	attempt  int16
+	result   map[string]any
 }
 
 type failRunCall struct {
-	runID   string
-	errMsg  string
-	requeue bool
-	backoff time.Duration
+	runID    string
+	workerID string
+	attempt  int16
+	errMsg   string
+	requeue  bool
+	backoff  time.Duration
 }
 
 type markDeadCall struct {
@@ -77,32 +93,65 @@ func (f *fakeStore) CreateRun(ctx context.Context, jobID string, priority int16,
 // --- Runs: worker lease lifecycle ---
 
 func (f *fakeStore) LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (*model.JobRun, *model.Job, error) {
+	f.mu.Lock()
+	f.operationOrder = append(f.operationOrder, "lease")
+	f.mu.Unlock()
+	if f.leaseNotify != nil {
+		select {
+		case f.leaseNotify <- struct{}{}:
+		default:
+		}
+	}
 	return nil, nil, nil
 }
 
-func (f *fakeStore) ExtendLease(ctx context.Context, runID string, workerID string, extend time.Duration) error {
+type extendLeaseCall struct {
+	runID         string
+	workerID      string
+	attempt       int16
+	leaseDuration time.Duration
+}
+
+func (f *fakeStore) ExtendLease(ctx context.Context, runID, workerID string, attempt int16, extend time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.extendLeaseCalls = append(f.extendLeaseCalls, extendLeaseCall{runID: runID, workerID: workerID, attempt: attempt, leaseDuration: extend})
+	if f.fenceAttempts && attempt != f.currentAttempt {
+		return store.ErrNotFound
+	}
 	return nil
 }
 
-func (f *fakeStore) MarkRunning(ctx context.Context, runID string) error {
+func (f *fakeStore) MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.markRunningCalls = append(f.markRunningCalls, runID)
-	return nil
+	f.markRunningWorkerIDs = append(f.markRunningWorkerIDs, workerID)
+	f.markRunningAttempts = append(f.markRunningAttempts, attempt)
+	if f.fenceAttempts && attempt != f.currentAttempt {
+		return store.ErrNotFound
+	}
+	return f.markRunningErr
 }
 
-func (f *fakeStore) CompleteRun(ctx context.Context, runID string, result map[string]any) error {
+func (f *fakeStore) CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.completeRunCalls = append(f.completeRunCalls, completeRunCall{runID: runID, result: result})
-	return nil
+	f.completeRunCalls = append(f.completeRunCalls, completeRunCall{runID: runID, workerID: workerID, attempt: attempt, result: result})
+	if f.fenceAttempts && attempt != f.currentAttempt {
+		return store.ErrNotFound
+	}
+	return f.completeRunErr
 }
 
-func (f *fakeStore) FailRun(ctx context.Context, runID string, errMsg string, requeue bool, backoff time.Duration) error {
+func (f *fakeStore) FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.failRunCalls = append(f.failRunCalls, failRunCall{runID: runID, errMsg: errMsg, requeue: requeue, backoff: backoff})
-	return nil
+	f.failRunCalls = append(f.failRunCalls, failRunCall{runID: runID, workerID: workerID, attempt: attempt, errMsg: errMsg, requeue: requeue, backoff: backoff})
+	if f.fenceAttempts && attempt != f.currentAttempt {
+		return store.ErrNotFound
+	}
+	return f.failRunErr
 }
 
 func (f *fakeStore) MarkDead(ctx context.Context, runID string, reason string) error {
@@ -130,8 +179,22 @@ func (f *fakeStore) CountPendingRuns(ctx context.Context) (int, error) {
 
 // --- Workers (unused by pool tests; minimal stubs) ---
 
-func (f *fakeStore) UpsertWorkerHeartbeat(ctx context.Context, workerID, hostname string) error {
-	return nil
+func (f *fakeStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.Worker) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.operationOrder = append(f.operationOrder, "heartbeat")
+	labels := make(map[string]string, len(worker.Labels))
+	for key, value := range worker.Labels {
+		labels[key] = value
+	}
+	worker.Labels = labels
+	f.heartbeatCalls = append(f.heartbeatCalls, worker)
+	if len(f.upsertErrors) == 0 {
+		return nil
+	}
+	err := f.upsertErrors[0]
+	f.upsertErrors = f.upsertErrors[1:]
+	return err
 }
 
 func (f *fakeStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {

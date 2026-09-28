@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/G1lollipop/atlas/internal/metrics"
@@ -11,11 +10,6 @@ import (
 // heartbeatLoop reuses PollInterval so a worker's liveness signal refreshes at
 // the same cadence it polls for work, rather than adding a second tunable.
 func (p *Pool) heartbeatLoop(ctx context.Context) {
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "unknown"
-	}
-
 	ticker := time.NewTicker(p.PollInterval)
 	defer ticker.Stop()
 
@@ -24,7 +18,7 @@ func (p *Pool) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := p.Store.UpsertWorkerHeartbeat(ctx, p.WorkerID, hostname); err != nil {
+			if err := p.sendHeartbeat(ctx); err != nil {
 				p.Logger.Error("heartbeat failed", "error", err)
 			}
 		}
