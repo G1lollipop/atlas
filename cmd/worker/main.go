@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -43,6 +44,10 @@ func main() {
 	if cfg.Concurrency < 0 {
 		fatal("invalid worker concurrency", fmt.Errorf("WORKER_CONCURRENCY must be zero or greater, got %d", cfg.Concurrency))
 	}
+	retryPolicy, err := loadRetryPolicy()
+	if err != nil {
+		fatal("invalid worker retry policy", err)
+	}
 
 	shutdownTracing, err := tracing.Init(ctx, "worker", cfg.OTLPEndpoint)
 	if err != nil {
@@ -61,6 +66,9 @@ func main() {
 	}
 
 	pool := worker.NewPool(st, cfg.WorkerID, cfg.Concurrency, cfg.LeaseDuration, cfg.PollInterval, log)
+	if err := pool.SetRetryPolicy(retryPolicy); err != nil {
+		fatal("configure worker retry policy", err)
+	}
 	pool.SetCapabilities(model.Worker{
 		CPUCapacity:      cfg.WorkerCPUCapacityMillis,
 		MemoryCapacityMB: cfg.WorkerMemoryCapacityMB,
@@ -72,6 +80,7 @@ func main() {
 	pool.RegisterHandler("echo", worker.EchoHandler)
 	pool.RegisterHandler("sleep", worker.SleepHandler)
 	pool.RegisterHandler("http_call", worker.HTTPCallHandler)
+	pool.RegisterHandler("idempotent_record", worker.NewIdempotentRecordHandler(st))
 
 	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: metrics.Handler()}
 	go func() {
@@ -92,4 +101,47 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = metricsServer.Shutdown(shutdownCtx)
+}
+
+func loadRetryPolicy() (worker.RetryPolicy, error) {
+	policy := worker.DefaultRetryPolicy()
+	if value := os.Getenv("WORKER_RETRY_BASE_DELAY"); value != "" {
+		delay, err := time.ParseDuration(value)
+		if err != nil {
+			return policy, fmt.Errorf("WORKER_RETRY_BASE_DELAY: %w", err)
+		}
+		policy.BaseDelay = delay
+	}
+	if value := os.Getenv("WORKER_RETRY_MULTIPLIER"); value != "" {
+		multiplier, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return policy, fmt.Errorf("WORKER_RETRY_MULTIPLIER: %w", err)
+		}
+		policy.Multiplier = multiplier
+	}
+	if value := os.Getenv("WORKER_RETRY_MAX_DELAY"); value != "" {
+		delay, err := time.ParseDuration(value)
+		if err != nil {
+			return policy, fmt.Errorf("WORKER_RETRY_MAX_DELAY: %w", err)
+		}
+		policy.MaxDelay = delay
+	}
+	if value := os.Getenv("WORKER_RETRY_JITTER"); value != "" {
+		jitter, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return policy, fmt.Errorf("WORKER_RETRY_JITTER: %w", err)
+		}
+		policy.Jitter = jitter
+	}
+	if value := os.Getenv("WORKER_RETRY_MAX_ATTEMPTS"); value != "" {
+		maxAttempts, err := strconv.ParseInt(value, 10, 16)
+		if err != nil {
+			return policy, fmt.Errorf("WORKER_RETRY_MAX_ATTEMPTS: %w", err)
+		}
+		policy.MaxAttempts = int16(maxAttempts)
+	}
+	if err := policy.Validate(); err != nil {
+		return policy, err
+	}
+	return policy, nil
 }

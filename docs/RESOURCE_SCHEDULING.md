@@ -88,3 +88,56 @@ allocations need a richer inventory model. Each scheduler pass currently scans
 all scheduled runs in pages and scores feasible run–worker pairs in memory, so
 very large backlogs will need a more selective candidate index or bounded
 incremental dispatch.
+
+## Execution, leases, and recovery
+
+A worker renews the lease of a running job at a fraction of the configured lease
+duration. Renewal is fenced by the worker ID, run attempt, active status, and
+unexpired lease. A long-running handler can therefore keep its lease while it is
+healthy; if the worker loses ownership, it cancels the handler context and does
+not write a completion for that attempt. Handlers must respect context
+cancellation before making further effects. The janitor requeues runs whose lease has
+expired. A worker heartbeat serves a different purpose: it advertises capacity
+and liveness to the scheduler so the scheduler can assign new work. It does not
+extend any individual run's lease.
+
+Execution is **at least once**. A handler can finish an external side effect and
+crash before the run is marked succeeded; recovery may execute the same run
+again. Every run has a stable `execution_key` that survives lease expiry, normal
+retry, and a manual dead-letter retry. Handlers can pass that key to a downstream
+system that supports idempotency, or use the transactional `IdempotencyStore` for
+database effects. Neither approach makes arbitrary external effects exactly once:
+the downstream system must actually honor the key, and a database transaction
+cannot atomically cover an unrelated external service.
+
+Transient failures are retried with a bounded, configurable exponential delay
+plus jitter so jobs that fail together do not all retry at the same instant.
+The run's `max_attempts` remains the upper bound. Once attempts are exhausted,
+the run enters `dead` and a dead-letter record is available through the API.
+An operator can retry that same run from attempt zero, keeping its
+`execution_key`, or discard the dead-letter record while leaving the run
+terminal for audit. A retry of a run that already applied a side effect therefore
+still needs the handler's idempotency contract.
+
+The built-in `idempotent_record` handler is a small database example. It writes
+the job payload to `idempotent_handler_effects` and the result to
+`execution_idempotency` in one transaction; a repeat call with the same
+`execution_key` reads that stored result. The `http_call` example sends the
+same key as `Idempotency-Key` on mutation requests, but the receiving service
+must implement deduplication for that header to have an effect.
+
+The worker reads these retry settings at startup:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `WORKER_RETRY_BASE_DELAY` | `1s` | First retry delay. |
+| `WORKER_RETRY_MULTIPLIER` | `2` | Exponential growth factor, at least one. |
+| `WORKER_RETRY_MAX_DELAY` | `5m` | Cap on the exponential part before jitter. |
+| `WORKER_RETRY_JITTER` | `0.2` | Uniform extra delay from zero through 20% of the capped delay. |
+| `WORKER_RETRY_MAX_ATTEMPTS` | `0` | Optional fleet-wide ceiling; zero uses the job's `max_attempts`. |
+
+For example, with the defaults, the second attempt starts after `1s` plus up
+to `0.2s` of jitter following the first failure. The next delay starts at
+`2s` plus up to `0.4s`; later exponential delays stop growing at `5m`, then
+receive up to `1m` of jitter. The worker's optional attempt ceiling can only
+reduce the maximum declared by a job.

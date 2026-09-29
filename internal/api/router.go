@@ -39,6 +39,9 @@ func NewRouter(st store.Store, log *slog.Logger, jwtSecret string, rateRPS float
 		r.Get("/jobs/{id}/runs", h.listJobRuns)
 		r.Get("/runs/{id}", h.getRun)
 		r.Get("/workers", h.listWorkers)
+		r.Get("/dead-letters", h.listDeadLetters)
+		r.Post("/dead-letters/{id}/retry", h.retryDeadLetter)
+		r.Delete("/dead-letters/{id}", h.deleteDeadLetter)
 	})
 
 	return r

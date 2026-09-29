@@ -17,7 +17,7 @@ import (
 
 const jobColumns = `id, name, payload, cron_expr, priority, workload_type, required_cpu_millis, required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`
 
-const runColumns = `id, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, assigned_worker_id, assigned_at, assignment_expires_at, started_at, finished_at, result, error, created_at`
+const runColumns = `id, execution_key, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, assigned_worker_id, assigned_at, assignment_expires_at, started_at, finished_at, result, error, created_at`
 
 // PostgresStore is the production store.Store implementation backed by Postgres.
 type PostgresStore struct {
@@ -159,7 +159,7 @@ func fetchDependencies(ctx context.Context, q querier, jobID string) ([]string, 
 func scanRun(row rowScanner) (*model.JobRun, error) {
 	var run model.JobRun
 	var resultRaw []byte
-	if err := row.Scan(&run.ID, &run.JobID, &run.Status, &run.Attempt, &run.Priority, &run.ScheduledAt,
+	if err := row.Scan(&run.ID, &run.ExecutionKey, &run.JobID, &run.Status, &run.Attempt, &run.Priority, &run.ScheduledAt,
 		&run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt, &run.AssignedWorkerID, &run.AssignedAt,
 		&run.AssignmentExpiresAt, &run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CreatedAt); err != nil {
 		return nil, err
@@ -376,7 +376,7 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 		offset = 0
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.id, r.job_id, r.status, r.attempt, r.priority, r.scheduled_at,
+		SELECT r.id, r.execution_key, r.job_id, r.status, r.attempt, r.priority, r.scheduled_at,
 		       r.leased_by, r.leased_at, r.lease_expires_at, r.assigned_worker_id,
 		       r.assigned_at, r.assignment_expires_at, r.started_at, r.finished_at,
 		       r.result, r.error, r.created_at,
@@ -401,7 +401,7 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 		var run model.JobRun
 		var job model.Job
 		var resultRaw, payloadRaw []byte
-		if err := rows.Scan(&run.ID, &run.JobID, &run.Status, &run.Attempt, &run.Priority,
+		if err := rows.Scan(&run.ID, &run.ExecutionKey, &run.JobID, &run.Status, &run.Attempt, &run.Priority,
 			&run.ScheduledAt, &run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt,
 			&run.AssignedWorkerID, &run.AssignedAt, &run.AssignmentExpiresAt,
 			&run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CreatedAt,

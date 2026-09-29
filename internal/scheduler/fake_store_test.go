@@ -433,6 +433,18 @@ func (f *fakeStore) ListJobRuns(ctx context.Context, jobID string, limit int) ([
 	return out, nil
 }
 
+func (f *fakeStore) ListDeadLetters(ctx context.Context, limit, offset int) ([]*model.DeadLetter, error) {
+	return []*model.DeadLetter{}, nil
+}
+
+func (f *fakeStore) RetryDeadLetter(ctx context.Context, id string) (*model.JobRun, error) {
+	return nil, store.ErrNotFound
+}
+
+func (f *fakeStore) DeleteDeadLetter(ctx context.Context, id string) error {
+	return store.ErrNotFound
+}
+
 func (f *fakeStore) CountPendingRuns(ctx context.Context) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

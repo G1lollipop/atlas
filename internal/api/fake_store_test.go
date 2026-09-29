@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -15,15 +16,17 @@ import (
 // routing, validation, and auth/rate-limit middleware without a real Postgres. Methods
 // the api package never calls (leasing, run lifecycle writes) are trivial stubs.
 type fakeStore struct {
-	mu   sync.Mutex
-	jobs map[string]*model.Job
-	runs map[string][]*model.JobRun
+	mu          sync.Mutex
+	jobs        map[string]*model.Job
+	runs        map[string][]*model.JobRun
+	deadLetters map[string]*model.DeadLetter
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		jobs: make(map[string]*model.Job),
-		runs: make(map[string][]*model.JobRun),
+		jobs:        make(map[string]*model.Job),
+		runs:        make(map[string][]*model.JobRun),
+		deadLetters: make(map[string]*model.DeadLetter),
 	}
 }
 
@@ -175,6 +178,74 @@ func (s *fakeStore) ListJobRuns(ctx context.Context, jobID string, limit int) ([
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.runs[jobID], nil
+}
+
+func (s *fakeStore) ListDeadLetters(ctx context.Context, limit, offset int) ([]*model.DeadLetter, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	letters := make([]*model.DeadLetter, 0, len(s.deadLetters))
+	for _, letter := range s.deadLetters {
+		letters = append(letters, letter)
+	}
+	sort.Slice(letters, func(i, j int) bool {
+		if !letters[i].CreatedAt.Equal(letters[j].CreatedAt) {
+			return letters[i].CreatedAt.After(letters[j].CreatedAt)
+		}
+		return letters[i].ID > letters[j].ID
+	})
+	if offset >= len(letters) {
+		return []*model.DeadLetter{}, nil
+	}
+	letters = letters[offset:]
+	if limit >= 0 && len(letters) > limit {
+		letters = letters[:limit]
+	}
+	return letters, nil
+}
+
+func (s *fakeStore) RetryDeadLetter(ctx context.Context, id string) (*model.JobRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	letter, ok := s.deadLetters[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	for _, runs := range s.runs {
+		for _, run := range runs {
+			if run.ID != letter.JobRunID {
+				continue
+			}
+			if run.Status != model.RunStatusDead {
+				return nil, store.ErrNotFound
+			}
+			run.Status = model.RunStatusQueued
+			run.Attempt = 0
+			run.ScheduledAt = time.Now()
+			run.LeasedBy = nil
+			run.LeasedAt = nil
+			run.LeaseExpiresAt = nil
+			run.AssignedWorkerID = nil
+			run.AssignedAt = nil
+			run.AssignmentExpiresAt = nil
+			run.StartedAt = nil
+			run.FinishedAt = nil
+			run.Result = nil
+			run.Error = nil
+			delete(s.deadLetters, id)
+			return run, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
+func (s *fakeStore) DeleteDeadLetter(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.deadLetters[id]; !ok {
+		return store.ErrNotFound
+	}
+	delete(s.deadLetters, id)
+	return nil
 }
 
 func (s *fakeStore) CountPendingRuns(ctx context.Context) (int, error) { return 0, nil }

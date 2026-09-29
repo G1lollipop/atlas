@@ -259,6 +259,76 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /v1/dead-letters:
+    get:
+      operationId: listDeadLetters
+      summary: List dead-letter records, newest first
+      parameters:
+        - name: limit
+          in: query
+          description: Default 50, capped at 200
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Dead-letter records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeadLetter"
+        "400":
+          description: Invalid limit or offset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/dead-letters/{id}/retry:
+    post:
+      operationId: retryDeadLetter
+      summary: Requeue a dead run with the same execution key
+      parameters:
+        - $ref: "#/components/parameters/DeadLetterId"
+      responses:
+        "200":
+          description: Requeued run with attempt reset to zero
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/dead-letters/{id}:
+    delete:
+      operationId: discardDeadLetter
+      summary: Remove a dead-letter record while retaining its terminal run
+      parameters:
+        - $ref: "#/components/parameters/DeadLetterId"
+      responses:
+        "204":
+          description: Dead-letter record discarded
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -273,6 +343,13 @@ components:
         login endpoint.
 
   parameters:
+    DeadLetterId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     JobId:
       name: id
       in: path
@@ -415,6 +492,10 @@ components:
         job_id:
           type: string
           format: uuid
+        execution_key:
+          type: string
+          format: uuid
+          description: Stable across automatic retries, lease recovery, and manual dead-letter retry.
         status:
           type: string
           enum: [queued, scheduled, assigned, leased, running, succeeded, failed, dead]
@@ -466,6 +547,25 @@ components:
         error:
           type: string
           nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    DeadLetter:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        job_run_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        payload:
+          type: object
+          nullable: true
+          additionalProperties: true
         created_at:
           type: string
           format: date-time

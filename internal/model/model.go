@@ -51,7 +51,10 @@ type Job struct {
 
 // JobRun is a single execution attempt (or series of attempts) of a Job.
 type JobRun struct {
-	ID                  string         `json:"id"`
+	ID string `json:"id"`
+	// ExecutionKey identifies this run across lease reclamation, retries, and
+	// manual dead-letter retries. Handlers can use it to deduplicate side effects.
+	ExecutionKey        string         `json:"execution_key"`
 	JobID               string         `json:"job_id"`
 	Status              RunStatus      `json:"status"`
 	Attempt             int16          `json:"attempt"`

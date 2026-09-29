@@ -2,13 +2,18 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/G1lollipop/atlas/internal/model"
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
 // Handler executes a Job for a given JobRun attempt and returns the result to persist.
@@ -71,6 +76,11 @@ func HTTPCallHandler(ctx context.Context, job *model.Job, run *model.JobRun) (ma
 	if err != nil {
 		return nil, fmt.Errorf("http_call: building request: %w", err)
 	}
+	// The receiving service must honor this key to suppress duplicate remote
+	// effects after a lease expires or a worker loses its response.
+	if run != nil && run.ExecutionKey != "" && !isSafeHTTPMethod(method) {
+		req.Header.Set("Idempotency-Key", run.ExecutionKey)
+	}
 
 	resp, err := httpCallClient.Do(req)
 	if err != nil {
@@ -89,4 +99,50 @@ func HTTPCallHandler(ctx context.Context, job *model.Job, run *model.JobRun) (ma
 		"status_code": resp.StatusCode,
 		"body":        string(buf[:n]),
 	}, nil
+}
+
+func isSafeHTTPMethod(method string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+// NewIdempotentRecordHandler demonstrates database-backed deduplication for a
+// handler with a transactional side effect. It writes the submitted payload to
+// idempotent_handler_effects and stores the result in the same transaction, so
+// reclaimed or manually retried executions return the saved result. Register it
+// as "idempotent_record" when wiring a Postgres-backed worker.
+func NewIdempotentRecordHandler(idempotencyStore store.IdempotencyStore) Handler {
+	return func(ctx context.Context, job *model.Job, run *model.JobRun) (map[string]any, error) {
+		if idempotencyStore == nil {
+			return nil, errors.New("idempotent_record: idempotency store is nil")
+		}
+		if job == nil {
+			return nil, errors.New("idempotent_record: job is nil")
+		}
+		if run == nil || run.ExecutionKey == "" {
+			return nil, errors.New("idempotent_record: run has no execution key")
+		}
+
+		payloadRaw, err := json.Marshal(job.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("idempotent_record: marshal payload: %w", err)
+		}
+		result, _, err := idempotencyStore.RunOnce(ctx, run.ExecutionKey, func(ctx context.Context, tx pgx.Tx) (map[string]any, error) {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO idempotent_handler_effects (execution_key, payload)
+				VALUES ($1, $2)
+			`, run.ExecutionKey, payloadRaw); err != nil {
+				return nil, fmt.Errorf("idempotent_record: persist effect: %w", err)
+			}
+			return map[string]any{
+				"execution_key": run.ExecutionKey,
+				"recorded":      true,
+			}, nil
+		})
+		return result, err
+	}
 }

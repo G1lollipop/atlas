@@ -5,8 +5,10 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"sync"
 	"time"
@@ -23,8 +25,6 @@ import (
 
 var tracer = otel.Tracer("atlas/worker")
 
-const maxBackoff = 5 * time.Minute
-
 type Pool struct {
 	Store         store.Store
 	WorkerID      string
@@ -32,6 +32,10 @@ type Pool struct {
 	LeaseDuration time.Duration
 	PollInterval  time.Duration
 	Logger        *slog.Logger
+
+	retryPolicy   RetryPolicy
+	retryRandom   func() float64
+	retryPolicyMu sync.Mutex
 
 	capabilities   model.Worker
 	hostname       string
@@ -54,12 +58,51 @@ func NewPool(st store.Store, workerID string, concurrency int, leaseDuration, po
 		LeaseDuration:  leaseDuration,
 		PollInterval:   pollInterval,
 		Logger:         log,
+		retryPolicy:    DefaultRetryPolicy(),
+		retryRandom:    rand.Float64,
 		hostname:       hostname,
 		startedAt:      time.Now().UTC(),
 		handlers:       make(map[string]Handler),
 		executionSlots: make(chan struct{}, max(concurrency, 0)),
 		resources:      newResourceAdmission(model.Worker{}),
 	}
+}
+
+// SetRetryPolicy validates and installs the worker's retry policy. Configure it
+// before Run; MaxAttempts caps each job's persisted retry limit when non-zero.
+func (p *Pool) SetRetryPolicy(policy RetryPolicy) error {
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	p.retryPolicyMu.Lock()
+	p.retryPolicy = policy
+	p.retryPolicyMu.Unlock()
+	return nil
+}
+
+// SetRetryRandomSource replaces the retry jitter source. It is primarily useful
+// for deterministic tests; configure it before Run.
+func (p *Pool) SetRetryRandomSource(source func() float64) {
+	p.retryPolicyMu.Lock()
+	defer p.retryPolicyMu.Unlock()
+	if source == nil {
+		p.retryRandom = rand.Float64
+		return
+	}
+	p.retryRandom = source
+}
+
+func (p *Pool) retryDelay(attempt int16) (time.Duration, error) {
+	p.retryPolicyMu.Lock()
+	defer p.retryPolicyMu.Unlock()
+	return p.retryPolicy.Delay(attempt, p.retryRandom)
+}
+
+func (p *Pool) maxAttempts(job *model.Job) int16 {
+	p.retryPolicyMu.Lock()
+	policyLimit := p.retryPolicy.MaxAttempts
+	p.retryPolicyMu.Unlock()
+	return effectiveMaxAttempts(job.MaxAttempts, policyLimit)
 }
 
 // SetCapabilities configures the resources this worker advertises. The store
@@ -296,18 +339,26 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 		span.SetStatus(codes.Error, "mark running failed")
 		return
 	}
-	stopLeaseRenewal := p.startLeaseRenewal(ctx, run.ID, run.Attempt)
 	metrics.RunsLeased.WithLabelValues(p.WorkerID).Inc()
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(job.TimeoutSeconds)*time.Second)
 	defer cancel()
+	stopLeaseRenewal := p.startLeaseRenewal(runCtx, cancel, run.ID, run.Attempt)
 
 	start := time.Now()
-	result, err := func() (map[string]any, error) {
-		defer stopLeaseRenewal()
-		return h(runCtx, job, run)
-	}()
+	result, err := h(runCtx, job, run)
+	leaseErr := stopLeaseRenewal()
 	metrics.RunDuration.Observe(time.Since(start).Seconds())
+	if leaseErr != nil {
+		// A failed renewal makes ownership uncertain. The janitor is responsible
+		// for recovery; do not write a completion or failure transition for a
+		// lease that may already belong to another attempt.
+		span.RecordError(leaseErr)
+		span.SetStatus(codes.Error, "lease renewal failed")
+		p.Logger.Warn("stopped handler after lease renewal failed",
+			"run_id", run.ID, "attempt", run.Attempt, "error", leaseErr)
+		return
+	}
 
 	// Defensive: a handler that ignores ctx and returns nil error on a timed-out
 	// run should still be treated as a failure, not a success.
@@ -332,10 +383,12 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 
 	// run.Attempt already reflects this attempt (LeaseNextRun increments it),
 	// so comparing it directly to MaxAttempts tells us if another try remains.
-	if run.Attempt < job.MaxAttempts {
-		backoff := time.Duration(1<<uint(run.Attempt)) * time.Second
-		if backoff > maxBackoff {
-			backoff = maxBackoff
+	maxAttempts := p.maxAttempts(job)
+	if run.Attempt < maxAttempts {
+		backoff, backoffErr := p.retryDelay(run.Attempt)
+		if backoffErr != nil {
+			p.Logger.Error("calculate retry delay failed; retrying immediately", "run_id", run.ID, "error", backoffErr)
+			backoff = 0
 		}
 		if ferr := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, err.Error(), true, backoff); ferr != nil {
 			p.Logger.Error("fail run failed", "run_id", run.ID, "error", ferr)
@@ -344,7 +397,7 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 		metrics.RunsCompleted.WithLabelValues("failed").Inc()
 		p.Logger.Warn("job run failed, will retry",
 			"run_id", run.ID, "job_id", job.ID, "job_name", job.Name,
-			"attempt", run.Attempt, "max_attempts", job.MaxAttempts,
+			"attempt", run.Attempt, "max_attempts", maxAttempts,
 			"backoff", backoff, "error", err)
 		return
 	}
@@ -361,7 +414,7 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	span.SetStatus(codes.Error, err.Error())
 	p.Logger.Error("job run dead: max attempts exceeded",
 		"run_id", run.ID, "job_id", job.ID, "job_name", job.Name,
-		"attempt", run.Attempt, "max_attempts", job.MaxAttempts, "error", err)
+		"attempt", run.Attempt, "max_attempts", maxAttempts, "error", err)
 }
 
 func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, job *model.Job, admissionErr error, span trace.Span) {
@@ -369,10 +422,12 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 	span.RecordError(admissionErr)
 	span.SetStatus(codes.Error, "resource admission rejected")
 
-	if run.Attempt < job.MaxAttempts {
-		backoff := p.PollInterval
-		if backoff <= 0 {
-			backoff = time.Second
+	maxAttempts := p.maxAttempts(job)
+	if run.Attempt < maxAttempts {
+		backoff, backoffErr := p.retryDelay(run.Attempt)
+		if backoffErr != nil {
+			p.Logger.Error("calculate retry delay failed; retrying immediately", "run_id", run.ID, "error", backoffErr)
+			backoff = 0
 		}
 		if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, true, backoff); err != nil {
 			p.Logger.Error("requeue run after resource admission rejection failed",
@@ -382,7 +437,7 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 		metrics.RunsCompleted.WithLabelValues("failed").Inc()
 		p.Logger.Error("run rejected by local resource admission; retrying",
 			"run_id", run.ID, "job_id", job.ID, "attempt", run.Attempt,
-			"max_attempts", job.MaxAttempts, "error", admissionErr, "backoff", backoff)
+			"max_attempts", maxAttempts, "error", admissionErr, "backoff", backoff)
 		return
 	}
 
@@ -398,39 +453,63 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 	metrics.RunsCompleted.WithLabelValues("dead").Inc()
 	p.Logger.Error("run rejected by local resource admission after max attempts",
 		"run_id", run.ID, "job_id", job.ID, "attempt", run.Attempt,
-		"max_attempts", job.MaxAttempts, "error", admissionErr)
+		"max_attempts", maxAttempts, "error", admissionErr)
 }
 
 // startLeaseRenewal keeps an executing run leased while its handler is active.
-// Renewal stops and joins before executeOne returns so no background extension
-// can race the final completion or failure transition.
-func (p *Pool) startLeaseRenewal(ctx context.Context, runID string, attempt int16) func() {
+// A failed renewal cancels the handler and stops renewal. The returned function
+// joins the goroutine before executeOne performs its final lifecycle transition.
+func (p *Pool) startLeaseRenewal(ctx context.Context, cancelHandler context.CancelFunc, runID string, attempt int16) func() error {
 	if p.LeaseDuration <= 0 {
-		return func() {}
+		return func() error { return nil }
 	}
 	interval := p.LeaseDuration / 3
 	if interval <= 0 {
 		interval = p.LeaseDuration
 	}
-	renewCtx, cancel := context.WithCancel(ctx)
+	stop := make(chan struct{})
 	done := make(chan struct{})
+	var stopOnce sync.Once
+	var renewalErr error
+	var errMu sync.Mutex
 	go func() {
 		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-renewCtx.Done():
+			case <-ctx.Done():
+				return
+			case <-stop:
 				return
 			case <-ticker.C:
-				if err := p.Store.ExtendLease(renewCtx, runID, p.WorkerID, attempt, p.LeaseDuration); err != nil {
-					p.Logger.Error("extend lease failed", "run_id", runID, "error", err)
+				if err := p.Store.ExtendLease(ctx, runID, p.WorkerID, attempt, p.LeaseDuration); err != nil {
+					// Handler timeout or shutdown cancels the renewal request too.
+					// Let executeOne handle that cancellation as a normal run
+					// failure; only a live context's renewal error means the
+					// lease may have been lost independently of the handler.
+					if ctx.Err() != nil {
+						return
+					}
+					errMu.Lock()
+					renewalErr = err
+					errMu.Unlock()
+					if errors.Is(err, store.ErrNotFound) {
+						p.Logger.Warn("lease ownership lost during renewal", "run_id", runID, "attempt", attempt)
+					} else {
+						p.Logger.Error("lease renewal failed", "run_id", runID, "attempt", attempt, "error", err)
+					}
+					cancelHandler()
+					return
 				}
 			}
 		}
 	}()
-	return func() {
-		cancel()
+	return func() error {
+		stopOnce.Do(func() { close(stop) })
 		<-done
+		errMu.Lock()
+		defer errMu.Unlock()
+		return renewalErr
 	}
 }

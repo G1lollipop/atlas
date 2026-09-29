@@ -75,6 +75,15 @@ type Store interface {
 
 	GetRun(ctx context.Context, id string) (*model.JobRun, error)
 	ListJobRuns(ctx context.Context, jobID string, limit int) ([]*model.JobRun, error)
+
+	// --- Dead letters ---
+	// ListDeadLetters returns the current primary-store view, newest first.
+	ListDeadLetters(ctx context.Context, limit, offset int) ([]*model.DeadLetter, error)
+	// RetryDeadLetter atomically removes the letter and resets its dead run to queued.
+	RetryDeadLetter(ctx context.Context, id string) (*model.JobRun, error)
+	// DeleteDeadLetter discards a letter while leaving its run in the dead state.
+	DeleteDeadLetter(ctx context.Context, id string) error
+
 	// CountPendingRuns counts the unassigned backlog (queued + scheduled) for the
 	// atlas_queue_depth gauge.
 	CountPendingRuns(ctx context.Context) (int, error)

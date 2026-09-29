@@ -161,7 +161,7 @@ func TestCreateJob_Idempotency(t *testing.T) {
 func TestAuth_RequiredOnV1Routes(t *testing.T) {
 	router, _ := newTestRouter(t)
 
-	paths := []string{"/v1/jobs", "/v1/workers"}
+	paths := []string{"/v1/jobs", "/v1/workers", "/v1/dead-letters"}
 	for _, p := range paths {
 		rec := doRequest(t, router, http.MethodGet, p, "" /* no token */, nil)
 		if rec.Code != http.StatusUnauthorized {

@@ -137,6 +137,36 @@ running jobs.
 - **200** `[]model.Worker`
 - **500** on store failure
 
+### `GET /v1/dead-letters`
+
+Lists dead-letter records, newest first. Each record identifies the failed run
+and includes its failure reason and payload. `limit` defaults to `50` and is
+capped at `200`; `offset` defaults to `0`. Invalid values return `400`.
+
+- **200** `[]model.DeadLetter`
+- **500** on store failure
+
+### `POST /v1/dead-letters/{id}/retry`
+
+Requeues the associated dead run and resets its attempt count. This is an
+operator action: the run keeps its original `execution_key` so an idempotent
+handler can recognize a side effect from an earlier attempt. The dead-letter
+record is removed once the retry is accepted. The scheduler will assign the
+run again when an eligible worker is available.
+
+- **200** requeued `model.JobRun`
+- **404** when the dead-letter record no longer exists
+- **500** on store failure
+
+### `DELETE /v1/dead-letters/{id}`
+
+Discards the dead-letter record while leaving the associated run in its
+terminal `dead` state for audit.
+
+- **204** when discarded
+- **404** when the dead-letter record no longer exists
+- **500** on store failure
+
 ---
 
 ## Response shapes
@@ -172,6 +202,7 @@ running jobs.
 {
   "id": "uuid",
   "job_id": "uuid",
+  "execution_key": "uuid",
   "status": "queued",
   "attempt": 0,
   "priority": 0,
@@ -192,6 +223,11 @@ running jobs.
 `assigned_worker_id`, `assigned_at`, and `assignment_expires_at`; see
 [RESOURCE_SCHEDULING.md](RESOURCE_SCHEDULING.md) for the placement policy and
 recovery transitions.
+
+The `execution_key` is stable across automatic retries, lease recovery, and
+manual dead-letter retry. This API and the worker provide at-least-once
+execution; an external side effect is deduplicated only if its handler or
+downstream service honors that key.
 
 **`model.Worker`**
 
