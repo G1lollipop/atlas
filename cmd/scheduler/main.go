@@ -1,7 +1,7 @@
-// Command scheduler runs the leader-elected promoter loop: it finds jobs that are due
-// (cron schedule elapsed, or a one-shot job that has never run) and whose dependencies
-// are satisfied, and creates a job_run for them. Multiple replicas may run for
-// availability, but only the elected leader promotes at any moment (see internal/lock).
+// Command scheduler runs the leader-elected scheduling loop: it creates queued runs for
+// due, dependency-satisfied jobs, advances due runs through scheduling, and assigns them
+// to live workers with matching resources. Multiple replicas may run for availability,
+// but only the elected leader promotes and dispatches work at any moment (see internal/lock).
 package main
 
 import (

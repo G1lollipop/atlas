@@ -123,6 +123,16 @@ func (s *fakeStore) HasActiveRun(ctx context.Context, jobID string) (bool, error
 func (s *fakeStore) CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (*model.JobRun, error) {
 	return nil, nil
 }
+func (s *fakeStore) ScheduleDueRuns(ctx context.Context) (int, error) { return 0, nil }
+func (s *fakeStore) RequeueExpiredAssignments(ctx context.Context) (int, error) {
+	return 0, nil
+}
+func (s *fakeStore) ListScheduledRuns(ctx context.Context, limit, offset int) ([]*model.RunCandidate, error) {
+	return nil, nil
+}
+func (s *fakeStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error) {
+	return false, nil
+}
 
 func (s *fakeStore) LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (*model.JobRun, *model.Job, error) {
 	return nil, nil, nil

@@ -17,7 +17,7 @@ import (
 
 const jobColumns = `id, name, payload, cron_expr, priority, workload_type, required_cpu_millis, required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`
 
-const runColumns = `id, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, started_at, finished_at, result, error, created_at`
+const runColumns = `id, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, assigned_worker_id, assigned_at, assignment_expires_at, started_at, finished_at, result, error, created_at`
 
 // PostgresStore is the production store.Store implementation backed by Postgres.
 type PostgresStore struct {
@@ -160,8 +160,8 @@ func scanRun(row rowScanner) (*model.JobRun, error) {
 	var run model.JobRun
 	var resultRaw []byte
 	if err := row.Scan(&run.ID, &run.JobID, &run.Status, &run.Attempt, &run.Priority, &run.ScheduledAt,
-		&run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt, &run.StartedAt, &run.FinishedAt, &resultRaw,
-		&run.Error, &run.CreatedAt); err != nil {
+		&run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt, &run.AssignedWorkerID, &run.AssignedAt,
+		&run.AssignmentExpiresAt, &run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CreatedAt); err != nil {
 		return nil, err
 	}
 	if resultRaw != nil {
@@ -329,17 +329,195 @@ func (s *PostgresStore) LatestRunForJob(ctx context.Context, jobID string) (*mod
 func (s *PostgresStore) HasActiveRun(ctx context.Context, jobID string) (bool, error) {
 	var exists bool
 	err := s.readPool().QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = $1 AND status IN ('pending','leased','running'))
+		SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = $1
+			AND status IN ('queued', 'scheduled', 'assigned', 'leased', 'running'))
 	`, jobID).Scan(&exists)
 	return exists, err
 }
 
 func (s *PostgresStore) CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (*model.JobRun, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO job_runs (job_id, priority, scheduled_at)
-		VALUES ($1, $2, $3)
+		INSERT INTO job_runs (job_id, status, priority, scheduled_at)
+		VALUES ($1, 'queued', $2, $3)
 		RETURNING `+runColumns, jobID, priority, scheduledAt)
 	return scanRun(row)
+}
+
+func (s *PostgresStore) ScheduleDueRuns(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE job_runs
+		SET status = 'scheduled'
+		WHERE status = 'queued' AND scheduled_at <= now()
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (s *PostgresStore) RequeueExpiredAssignments(ctx context.Context) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE job_runs
+		SET status = 'queued', assigned_worker_id = NULL, assigned_at = NULL,
+		    assignment_expires_at = NULL
+		WHERE status = 'assigned' AND assignment_expires_at <= now()
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int) ([]*model.RunCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.id, r.job_id, r.status, r.attempt, r.priority, r.scheduled_at,
+		       r.leased_by, r.leased_at, r.lease_expires_at, r.assigned_worker_id,
+		       r.assigned_at, r.assignment_expires_at, r.started_at, r.finished_at,
+		       r.result, r.error, r.created_at,
+		       j.id, j.name, j.payload, j.cron_expr, j.priority, j.workload_type,
+		       j.required_cpu_millis, j.required_memory_mb, j.required_gpu_count,
+		       j.required_gpu_memory_mb, j.required_accelerator, j.max_attempts,
+		       j.timeout_seconds, j.status, j.idempotency_key, j.created_at, j.updated_at
+		FROM job_runs r
+		JOIN jobs j ON j.id = r.job_id
+		WHERE r.status = 'scheduled' AND r.scheduled_at <= now()
+		ORDER BY ((r.priority::bigint * 3600) - EXTRACT(EPOCH FROM r.scheduled_at)) DESC,
+		         r.scheduled_at ASC, r.created_at ASC, r.id ASC
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make([]*model.RunCandidate, 0)
+	for rows.Next() {
+		var run model.JobRun
+		var job model.Job
+		var resultRaw, payloadRaw []byte
+		if err := rows.Scan(&run.ID, &run.JobID, &run.Status, &run.Attempt, &run.Priority,
+			&run.ScheduledAt, &run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt,
+			&run.AssignedWorkerID, &run.AssignedAt, &run.AssignmentExpiresAt,
+			&run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CreatedAt,
+			&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount,
+			&job.RequiredGPUMemoryMB, &job.RequiredAccelerator, &job.MaxAttempts,
+			&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if resultRaw != nil {
+			if err := json.Unmarshal(resultRaw, &run.Result); err != nil {
+				return nil, fmt.Errorf("unmarshal result: %w", err)
+			}
+		}
+		if err := json.Unmarshal(payloadRaw, &job.Payload); err != nil {
+			return nil, fmt.Errorf("unmarshal payload: %w", err)
+		}
+		candidates = append(candidates, &model.RunCandidate{Run: &run, Job: &job})
+	}
+	return candidates, rows.Err()
+}
+
+func (s *PostgresStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error) {
+	if assignmentTTL <= 0 || heartbeatTTL <= 0 {
+		return false, fmt.Errorf("assignment and heartbeat TTLs must be positive")
+	}
+	assignmentTTLMillis := durationMilliseconds(assignmentTTL)
+	heartbeatTTLMillis := durationMilliseconds(heartbeatTTL)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var worker model.Worker
+	err = tx.QueryRow(ctx, `
+		SELECT cpu_capacity, memory_capacity_mb, gpu_count, gpu_type, gpu_memory_mb
+		FROM workers
+		WHERE id = $1 AND status = 'alive'
+		  AND last_heartbeat_at > now() - ($2::bigint * INTERVAL '1 millisecond')
+		FOR UPDATE SKIP LOCKED
+	`, workerID, heartbeatTTLMillis).Scan(&worker.CPUCapacity, &worker.MemoryCapacityMB,
+		&worker.GPUCount, &worker.GPUType, &worker.GPUMemoryMB)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	var jobID string
+	err = tx.QueryRow(ctx, `
+		SELECT job_id
+		FROM job_runs
+		WHERE id = $1 AND status = 'scheduled' AND scheduled_at <= now()
+		FOR UPDATE SKIP LOCKED
+	`, runID).Scan(&jobID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	var requiredCPU, requiredMemory, requiredGPU, requiredGPUMemory int64
+	var requiredAccelerator string
+	err = tx.QueryRow(ctx, `
+		SELECT required_cpu_millis, required_memory_mb, required_gpu_count,
+		       required_gpu_memory_mb, required_accelerator
+		FROM jobs WHERE id = $1
+	`, jobID).Scan(&requiredCPU, &requiredMemory, &requiredGPU,
+		&requiredGPUMemory, &requiredAccelerator)
+	if err != nil {
+		return false, err
+	}
+
+	var reservedCPU, reservedMemory, reservedGPU, reservedGPUMemory int64
+	err = tx.QueryRow(ctx, `
+		SELECT COALESCE(SUM(j.required_cpu_millis), 0)::bigint,
+		       COALESCE(SUM(j.required_memory_mb), 0)::bigint,
+		       COALESCE(SUM(j.required_gpu_count), 0)::bigint,
+	       COALESCE(SUM(j.required_gpu_count::bigint * j.required_gpu_memory_mb::bigint), 0)::bigint
+		FROM job_runs r
+		JOIN jobs j ON j.id = r.job_id
+		WHERE (r.status = 'assigned' AND r.assigned_worker_id = $1)
+		   OR (r.status IN ('leased', 'running') AND r.leased_by = $1)
+	`, workerID).Scan(&reservedCPU, &reservedMemory, &reservedGPU, &reservedGPUMemory)
+	if err != nil {
+		return false, err
+	}
+
+	if requiredCPU > int64(worker.CPUCapacity)-reservedCPU ||
+		requiredMemory > int64(worker.MemoryCapacityMB)-reservedMemory ||
+		requiredGPU > int64(worker.GPUCount)-reservedGPU ||
+		(requiredGPU > 0 && requiredGPUMemory > int64(worker.GPUMemoryMB)) ||
+		requiredGPU*requiredGPUMemory > int64(worker.GPUCount)*int64(worker.GPUMemoryMB)-reservedGPUMemory ||
+		(requiredAccelerator != "" && !strings.EqualFold(strings.TrimSpace(requiredAccelerator), strings.TrimSpace(worker.GPUType))) {
+		return false, nil
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE job_runs
+		SET status = 'assigned', assigned_worker_id = $1, assigned_at = now(),
+		    assignment_expires_at = now() + ($2::bigint * INTERVAL '1 millisecond')
+		WHERE id = $3 AND status = 'scheduled'
+	`, workerID, assignmentTTLMillis, runID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (*model.JobRun, *model.Job, error) {
@@ -349,17 +527,16 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Lock this worker before examining capacity. Concurrent pollers for one worker
-	// serialize here, so each later transaction includes the lease committed by the
-	// previous one when it calculates available resources.
+	// Keep lock order consistent with AssignRun: worker first, then run. Concurrent
+	// pollers for one worker serialize here before they inspect reserved capacity.
 	var worker model.Worker
 	err = tx.QueryRow(ctx, `
 		SELECT cpu_capacity, memory_capacity_mb, gpu_count, gpu_type, gpu_memory_mb
 		FROM workers
 		WHERE id = $1 AND status = 'alive'
 		FOR UPDATE SKIP LOCKED
-	`, workerID).Scan(&worker.CPUCapacity, &worker.MemoryCapacityMB, &worker.GPUCount,
-		&worker.GPUType, &worker.GPUMemoryMB)
+	`, workerID).Scan(&worker.CPUCapacity, &worker.MemoryCapacityMB,
+		&worker.GPUCount, &worker.GPUType, &worker.GPUMemoryMB)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, nil
@@ -367,8 +544,38 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 		return nil, nil, err
 	}
 
-	// Reservations are derived from current leases, so terminal runs, retries, and
-	// reclaimed leases release capacity automatically without a second counter to drift.
+	var runID, jobID string
+	// Assignments are already placed by the scheduler policy. Preserve the same
+	// priority-plus-age ordering when one worker has multiple assignments.
+	err = tx.QueryRow(ctx, `
+		SELECT r.id, r.job_id
+		FROM job_runs r
+		WHERE r.status = 'assigned' AND r.assigned_worker_id = $1
+		  AND r.assignment_expires_at > now() AND r.scheduled_at <= now()
+		ORDER BY ((r.priority::bigint * 3600) - EXTRACT(EPOCH FROM r.scheduled_at)) DESC,
+		         r.scheduled_at ASC, r.created_at ASC, r.id ASC
+		LIMIT 1
+		FOR UPDATE OF r SKIP LOCKED
+	`, workerID).Scan(&runID, &jobID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+
+	var requiredCPU, requiredMemory, requiredGPU, requiredGPUMemory int64
+	var requiredAccelerator string
+	if err := tx.QueryRow(ctx, `
+		SELECT required_cpu_millis, required_memory_mb, required_gpu_count,
+		       required_gpu_memory_mb, required_accelerator
+		FROM jobs WHERE id = $1
+	`, jobID).Scan(&requiredCPU, &requiredMemory, &requiredGPU,
+		&requiredGPUMemory, &requiredAccelerator); err != nil {
+		return nil, nil, err
+	}
+
+	var reservedCPU, reservedMemory, reservedGPU, reservedGPUMemory int64
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(SUM(j.required_cpu_millis), 0)::bigint,
 		       COALESCE(SUM(j.required_memory_mb), 0)::bigint,
@@ -376,70 +583,62 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 		       COALESCE(SUM(j.required_gpu_count::bigint * j.required_gpu_memory_mb::bigint), 0)::bigint
 		FROM job_runs r
 		JOIN jobs j ON j.id = r.job_id
-		WHERE r.leased_by = $1 AND r.status IN ('leased', 'running')
-	`, workerID).Scan(&worker.CurrentCPUReserved, &worker.CurrentMemoryReserved,
-		&worker.CurrentGPUReserved, &worker.CurrentGPUMemoryReserved); err != nil {
+		WHERE r.id <> $1 AND (
+		    (r.status = 'assigned' AND r.assigned_worker_id = $2)
+		    OR (r.status IN ('leased', 'running') AND r.leased_by = $2)
+		)
+	`, runID, workerID).Scan(&reservedCPU, &reservedMemory, &reservedGPU, &reservedGPUMemory); err != nil {
 		return nil, nil, err
 	}
 
-	var runID, jobID string
-	err = tx.QueryRow(ctx, `
-		SELECT r.id, r.job_id
-		FROM job_runs r
-		JOIN jobs j ON j.id = r.job_id
-		WHERE r.status = 'pending' AND r.scheduled_at <= now()
-		  AND j.required_cpu_millis::bigint <= $1::bigint - $2::bigint
-		  AND j.required_memory_mb::bigint <= $3::bigint - $4::bigint
-		  AND j.required_gpu_count::bigint <= $5::bigint - $6::bigint
-		  AND (j.required_gpu_count = 0 OR j.required_gpu_memory_mb <= $7)
-		  AND j.required_gpu_count::bigint * j.required_gpu_memory_mb::bigint <=
-		      ($5::bigint * $7::bigint) - $8::bigint
-		  AND (j.required_accelerator = '' OR lower(btrim(j.required_accelerator)) = lower(btrim($9)))
-		ORDER BY r.priority DESC, r.scheduled_at ASC
-		LIMIT 1
-		FOR UPDATE OF r SKIP LOCKED
-	`, worker.CPUCapacity, worker.CurrentCPUReserved,
-		worker.MemoryCapacityMB, worker.CurrentMemoryReserved,
-		worker.GPUCount, worker.CurrentGPUReserved, worker.GPUMemoryMB,
-		worker.CurrentGPUMemoryReserved, worker.GPUType).Scan(&runID, &jobID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil, nil
+	fits := requiredCPU <= int64(worker.CPUCapacity)-reservedCPU &&
+		requiredMemory <= int64(worker.MemoryCapacityMB)-reservedMemory &&
+		requiredGPU <= int64(worker.GPUCount)-reservedGPU &&
+		(requiredGPU == 0 || requiredGPUMemory <= int64(worker.GPUMemoryMB)) &&
+		requiredGPU*requiredGPUMemory <= int64(worker.GPUCount)*int64(worker.GPUMemoryMB)-reservedGPUMemory &&
+		(requiredAccelerator == "" || strings.EqualFold(strings.TrimSpace(requiredAccelerator), strings.TrimSpace(worker.GPUType)))
+	if !fits {
+		if _, err := tx.Exec(ctx, `
+			UPDATE job_runs
+			SET status = 'queued', scheduled_at = now(), assigned_worker_id = NULL,
+			    assigned_at = NULL, assignment_expires_at = NULL
+			WHERE id = $1 AND status = 'assigned' AND assigned_worker_id = $2
+		`, runID, workerID); err != nil {
+			return nil, nil, err
 		}
-		return nil, nil, err
+		if err := tx.Commit(ctx); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, nil
 	}
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE job_runs
-		SET status = 'leased', leased_by = $1, leased_at = now(), lease_expires_at = now() + $2, attempt = attempt + 1
-		WHERE id = $3
-	`, workerID, leaseDuration, runID); err != nil {
+		SET status = 'leased', leased_by = $1, leased_at = now(),
+		    lease_expires_at = now() + ($2::bigint * INTERVAL '1 millisecond'), attempt = attempt + 1
+		WHERE id = $3 AND status = 'assigned' AND assigned_worker_id = $1
+	`, workerID, durationMilliseconds(leaseDuration), runID); err != nil {
 		return nil, nil, err
 	}
-
 	run, err := fetchRun(ctx, tx, runID)
 	if err != nil {
 		return nil, nil, err
 	}
-
 	job, err := fetchJob(ctx, tx, jobID)
 	if err != nil {
 		return nil, nil, err
 	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, err
 	}
-
 	return run, job, nil
 }
-
 func (s *PostgresStore) ExtendLease(ctx context.Context, runID, workerID string, attempt int16, extend time.Duration) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE job_runs SET lease_expires_at = now() + $1
+		UPDATE job_runs SET lease_expires_at = now() + ($1::bigint * INTERVAL '1 millisecond')
 		WHERE id = $2 AND leased_by = $3 AND attempt = $4
 		  AND status IN ('leased', 'running') AND lease_expires_at > now()
-	`, extend, runID, workerID, attempt)
+	`, durationMilliseconds(extend), runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
@@ -491,11 +690,12 @@ func (s *PostgresStore) FailRun(ctx context.Context, runID, workerID string, att
 	if requeue {
 		tag, err = s.pool.Exec(ctx, `
 			UPDATE job_runs
-			SET status = 'pending', scheduled_at = now() + $1, error = $2,
-			    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
+			SET status = 'queued', scheduled_at = now() + ($1::bigint * INTERVAL '1 millisecond'), error = $2,
+			    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
+			    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL
 			WHERE id = $3 AND leased_by = $4 AND attempt = $5
 			  AND status IN ('leased', 'running') AND lease_expires_at > now()
-		`, backoff, errMsg, runID, workerID, attempt)
+		`, durationMilliseconds(backoff), errMsg, runID, workerID, attempt)
 	} else {
 		tag, err = s.pool.Exec(ctx, `
 			UPDATE job_runs
@@ -557,7 +757,8 @@ func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason strin
 func (s *PostgresStore) ReclaimExpiredLeases(ctx context.Context) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE job_runs
-		SET status = 'pending', leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
+		SET status = 'queued', leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
+		    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL
 		WHERE status IN ('leased', 'running') AND lease_expires_at < now()
 		RETURNING id
 	`)
@@ -608,7 +809,7 @@ func (s *PostgresStore) ListJobRuns(ctx context.Context, jobID string, limit int
 
 func (s *PostgresStore) CountPendingRuns(ctx context.Context) (int, error) {
 	var count int
-	err := s.readPool().QueryRow(ctx, `SELECT count(*) FROM job_runs WHERE status = 'pending'`).Scan(&count)
+	err := s.readPool().QueryRow(ctx, `SELECT count(*) FROM job_runs WHERE status IN ('queued', 'scheduled')`).Scan(&count)
 	return count, err
 }
 
@@ -660,7 +861,8 @@ func (s *PostgresStore) ListWorkers(ctx context.Context) ([]*model.Worker, error
 			       SUM(j.required_gpu_count::bigint * j.required_gpu_memory_mb::bigint)::bigint AS gpu_memory_reserved
 			FROM job_runs r
 			JOIN jobs j ON j.id = r.job_id
-			WHERE r.leased_by = w.id AND r.status IN ('leased', 'running')
+			WHERE (r.status = 'assigned' AND r.assigned_worker_id = w.id)
+			   OR (r.status IN ('leased', 'running') AND r.leased_by = w.id)
 		) res ON TRUE
 		ORDER BY w.id
 	`)
@@ -695,4 +897,16 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func durationMilliseconds(d time.Duration) int64 {
+	millis := int64(d / time.Millisecond)
+	if remainder := d % time.Millisecond; remainder != 0 {
+		if d > 0 {
+			millis++
+		} else {
+			millis--
+		}
+	}
+	return millis
 }

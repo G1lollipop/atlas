@@ -25,8 +25,8 @@ var tracer = otel.Tracer("atlas/scheduler")
 const listActiveJobsLimit = 10000
 
 // Promoter is the leader-only loop that turns due, dependency-satisfied jobs into
-// pending job_runs. Only one replica's Promoter should be actively promoting at a
-// time; that's enforced by Elector, not by this type itself.
+// queued job_runs and dispatches scheduled runs to compatible workers. Only one
+// replica's Promoter should be actively promoting at a time; Elector enforces that.
 type Promoter struct {
 	Store    store.Store
 	Elector  lock.Elector
@@ -44,7 +44,7 @@ func NewPromoter(st store.Store, el lock.Elector, log *slog.Logger, interval tim
 	}
 }
 
-// PromoteOnce scans active jobs and creates a run for each one that is due and whose
+// PromoteOnce scans active jobs and creates a queued run for each one that is due and whose
 // dependencies are satisfied. It is safe to call directly (e.g. from tests or an
 // admin "promote now" endpoint) without going through Run/Elector.
 func (p *Promoter) PromoteOnce(ctx context.Context) (int, error) {
@@ -121,11 +121,15 @@ func (p *Promoter) PromoteOnce(ctx context.Context) (int, error) {
 	return promoted, nil
 }
 
-// Run drives the promotion loop until ctx is cancelled. Leadership is re-checked on
-// every tick (not just once at startup) because leadership can change hands at any
-// time - e.g. this replica's connection holding the advisory lock drops, or another
-// replica's TryAcquire races in - so staying leader-aware only at Run() startup would
-// let a demoted replica keep promoting.
+// DispatchOnce recovers expired ownership, schedules queued runs, and assigns work
+// to compatible workers. Run invokes it only while this replica holds leadership.
+func (p *Promoter) DispatchOnce(ctx context.Context) (int, error) {
+	return NewDispatcher(p.Store, p.Logger).DispatchOnce(ctx)
+}
+
+// Run drives promotion and assignment until ctx is cancelled. Leadership is
+// re-checked on every tick because leadership can change hands at any time, for
+// example if this replica's advisory-lock connection drops.
 func (p *Promoter) Run(ctx context.Context) error {
 	ticker := time.NewTicker(p.Interval)
 	defer ticker.Stop()
@@ -150,6 +154,9 @@ func (p *Promoter) Run(ctx context.Context) error {
 				metrics.IsLeader.Set(1)
 				if _, err := p.PromoteOnce(ctx); err != nil {
 					p.Logger.Error("promote once failed", "error", err)
+				}
+				if _, err := p.DispatchOnce(ctx); err != nil {
+					p.Logger.Error("dispatch once failed", "error", err)
 				}
 			} else {
 				metrics.IsLeader.Set(0)

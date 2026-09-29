@@ -1,6 +1,6 @@
-// Package worker implements the lease/execute/complete loop that turns pending
-// job_runs into finished (or retried, or dead-lettered) ones, plus the
-// heartbeat and lease-reclaim background loops that keep the fleet healthy.
+// Package worker implements the lease/execute/complete loop for scheduler-assigned
+// job_runs, plus heartbeat and lease-reclaim background loops that keep the fleet
+// healthy.
 package worker
 
 import (
@@ -81,10 +81,11 @@ func (p *Pool) RegisterHandler(jobName string, h Handler) {
 	p.handlers[jobName] = h
 }
 
-// Run blocks until ctx is cancelled, running Concurrency lease/execute loops
-// plus one heartbeat loop and one janitor (lease-reclaim) loop.
+// Run blocks until ctx is cancelled, running Concurrency loops that lease only
+// work assigned to this worker, plus one heartbeat loop and one janitor
+// (lease-reclaim) loop.
 func (p *Pool) Run(ctx context.Context) error {
-	// A worker must be visible to resource matching before it can lease work.
+	// A worker must be visible to the scheduler before it can be assigned work.
 	// Retry transient store failures here, before any leasing goroutine starts.
 	for ctx.Err() == nil {
 		if err := p.sendHeartbeat(ctx); err == nil {

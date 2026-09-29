@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -18,17 +19,27 @@ type fakeStore struct {
 
 	jobs      map[string]*model.Job
 	dependsOn map[string][]string // jobID -> depends on these jobIDs
+	workers   map[string]*model.Worker
 
 	runs         []*model.JobRun
-	activeRunJob map[string]bool // jobID -> has an active (pending/leased/running) run
+	activeRunJob map[string]bool // jobID -> has an active (queued/scheduled/assigned/leased/running) run
 	nextRunID    int
+
+	scheduleCalls int
+	reclaimCalls  int
+	requeueCalls  int
+	assignCalls   map[assignmentPair]int
+	rejectRuns    map[string]bool
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		jobs:         make(map[string]*model.Job),
 		dependsOn:    make(map[string][]string),
+		workers:      make(map[string]*model.Worker),
 		activeRunJob: make(map[string]bool),
+		assignCalls:  make(map[assignmentPair]int),
+		rejectRuns:   make(map[string]bool),
 	}
 }
 
@@ -164,7 +175,7 @@ func (f *fakeStore) CreateRun(ctx context.Context, jobID string, priority int16,
 	run := &model.JobRun{
 		ID:          "run-" + jobIDSuffix(f.nextRunID),
 		JobID:       jobID,
-		Status:      model.RunStatusPending,
+		Status:      model.RunStatusQueued,
 		Attempt:     1,
 		Priority:    priority,
 		ScheduledAt: scheduledAt,
@@ -173,6 +184,147 @@ func (f *fakeStore) CreateRun(ctx context.Context, jobID string, priority int16,
 	f.runs = append(f.runs, run)
 	f.activeRunJob[jobID] = true
 	return run, nil
+}
+
+func (f *fakeStore) ScheduleDueRuns(ctx context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scheduleCalls++
+	now := time.Now()
+	count := 0
+	for _, run := range f.runs {
+		if run.Status == model.RunStatusQueued && !run.ScheduledAt.After(now) {
+			run.Status = model.RunStatusScheduled
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeStore) RequeueExpiredAssignments(ctx context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requeueCalls++
+	now := time.Now()
+	count := 0
+	for _, run := range f.runs {
+		if run.Status == model.RunStatusAssigned && run.AssignmentExpiresAt != nil && !run.AssignmentExpiresAt.After(now) {
+			run.Status = model.RunStatusQueued
+			run.AssignedWorkerID = nil
+			run.AssignedAt = nil
+			run.AssignmentExpiresAt = nil
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeStore) ListScheduledRuns(ctx context.Context, limit, offset int) ([]*model.RunCandidate, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now()
+	var candidates []*model.RunCandidate
+	for _, run := range f.runs {
+		if run.Status != model.RunStatusScheduled || run.ScheduledAt.After(now) {
+			continue
+		}
+		job, ok := f.jobs[run.JobID]
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, &model.RunCandidate{Run: run, Job: job})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Run.Priority != candidates[j].Run.Priority {
+			return candidates[i].Run.Priority > candidates[j].Run.Priority
+		}
+		if !candidates[i].Run.ScheduledAt.Equal(candidates[j].Run.ScheduledAt) {
+			return candidates[i].Run.ScheduledAt.Before(candidates[j].Run.ScheduledAt)
+		}
+		if !candidates[i].Run.CreatedAt.Equal(candidates[j].Run.CreatedAt) {
+			return candidates[i].Run.CreatedAt.Before(candidates[j].Run.CreatedAt)
+		}
+		return candidates[i].Run.ID < candidates[j].Run.ID
+	})
+	if offset >= len(candidates) {
+		return []*model.RunCandidate{}, nil
+	}
+	candidates = candidates[offset:]
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
+}
+
+func (f *fakeStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pair := assignmentPair{runID: runID, workerID: workerID}
+	f.assignCalls[pair]++
+
+	var run *model.JobRun
+	for _, candidate := range f.runs {
+		if candidate.ID == runID {
+			run = candidate
+			break
+		}
+	}
+	_, ok := f.workers[workerID]
+	if run == nil || run.Status != model.RunStatusScheduled || !ok || f.rejectRuns[runID] {
+		return false, nil
+	}
+	job, ok := f.jobs[run.JobID]
+	if !ok {
+		return false, nil
+	}
+	workerSnapshot := f.workerSnapshotLocked(workerID)
+	if !WorkerCanRun(job, workerSnapshot, time.Now(), heartbeatTTL) {
+		return false, nil
+	}
+	now := time.Now()
+	assignedWorkerID := workerID
+	run.Status = model.RunStatusAssigned
+	run.AssignedWorkerID = &assignedWorkerID
+	run.AssignedAt = &now
+	expires := now.Add(assignmentTTL)
+	run.AssignmentExpiresAt = &expires
+	return true, nil
+}
+
+func (f *fakeStore) workerSnapshotLocked(workerID string) *model.Worker {
+	worker, ok := f.workers[workerID]
+	if !ok {
+		return nil
+	}
+	copyWorker := *worker
+	copyWorker.CurrentCPUReserved = 0
+	copyWorker.CurrentMemoryReserved = 0
+	copyWorker.CurrentGPUReserved = 0
+	copyWorker.CurrentGPUMemoryReserved = 0
+	for _, run := range f.runs {
+		owner := ""
+		if run.Status == model.RunStatusAssigned && run.AssignedWorkerID != nil {
+			owner = *run.AssignedWorkerID
+		} else if (run.Status == model.RunStatusLeased || run.Status == model.RunStatusRunning) && run.LeasedBy != nil {
+			owner = *run.LeasedBy
+		}
+		if owner != workerID {
+			continue
+		}
+		job := f.jobs[run.JobID]
+		if job == nil {
+			continue
+		}
+		copyWorker.CurrentCPUReserved += int64(job.RequiredCPUMillis)
+		copyWorker.CurrentMemoryReserved += int64(job.RequiredMemoryMB)
+		copyWorker.CurrentGPUReserved += int64(job.RequiredGPUCount)
+		copyWorker.CurrentGPUMemoryReserved += int64(job.RequiredGPUCount) * int64(job.RequiredGPUMemoryMB)
+	}
+	copyWorker.AvailableCPUMillis = maxAvailable(int64(copyWorker.CPUCapacity) - copyWorker.CurrentCPUReserved)
+	copyWorker.AvailableMemoryMB = maxAvailable(int64(copyWorker.MemoryCapacityMB) - copyWorker.CurrentMemoryReserved)
+	copyWorker.AvailableGPUCount = maxAvailable(int64(copyWorker.GPUCount) - copyWorker.CurrentGPUReserved)
+	copyWorker.AvailableGPUMemoryMB = maxAvailable(int64(copyWorker.GPUCount)*int64(copyWorker.GPUMemoryMB) - copyWorker.CurrentGPUMemoryReserved)
+	return &copyWorker
 }
 
 // setRunStatus is a test helper to move a run (and its job's "active" bookkeeping)
@@ -228,7 +380,7 @@ func (f *fakeStore) CompleteRun(ctx context.Context, runID, workerID string, att
 
 func (f *fakeStore) FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error {
 	if requeue {
-		f.setRunStatus(runID, model.RunStatusPending)
+		f.setRunStatus(runID, model.RunStatusQueued)
 	} else {
 		f.setRunStatus(runID, model.RunStatusFailed)
 	}
@@ -241,7 +393,21 @@ func (f *fakeStore) MarkDead(ctx context.Context, runID string, reason string) e
 }
 
 func (f *fakeStore) ReclaimExpiredLeases(ctx context.Context) (int, error) {
-	return 0, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reclaimCalls++
+	now := time.Now()
+	count := 0
+	for _, run := range f.runs {
+		if (run.Status == model.RunStatusLeased || run.Status == model.RunStatusRunning) && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now) {
+			run.Status = model.RunStatusQueued
+			run.LeasedBy = nil
+			run.LeasedAt = nil
+			run.LeaseExpiresAt = nil
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (f *fakeStore) GetRun(ctx context.Context, id string) (*model.JobRun, error) {
@@ -272,7 +438,7 @@ func (f *fakeStore) CountPendingRuns(ctx context.Context) (int, error) {
 	defer f.mu.Unlock()
 	n := 0
 	for _, run := range f.runs {
-		if run.Status == model.RunStatusPending {
+		if run.Status == model.RunStatusQueued || run.Status == model.RunStatusScheduled {
 			n++
 		}
 	}
@@ -282,11 +448,28 @@ func (f *fakeStore) CountPendingRuns(ctx context.Context) (int, error) {
 // --- Workers (unused by scheduler; minimal stubs) ---
 
 func (f *fakeStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.Worker) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	copyWorker := worker
+	if copyWorker.LastHeartbeatAt.IsZero() {
+		copyWorker.LastHeartbeatAt = time.Now()
+	}
+	if copyWorker.Status == "" {
+		copyWorker.Status = model.WorkerStatusAlive
+	}
+	f.workers[worker.ID] = &copyWorker
 	return nil
 }
 
 func (f *fakeStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {
-	return nil, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	workers := make([]*model.Worker, 0, len(f.workers))
+	for id := range f.workers {
+		workers = append(workers, f.workerSnapshotLocked(id))
+	}
+	sort.Slice(workers, func(i, j int) bool { return workers[i].ID < workers[j].ID })
+	return workers, nil
 }
 
 func (f *fakeStore) Close() {}

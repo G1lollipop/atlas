@@ -55,6 +55,70 @@ func TestExecuteOne_Success(t *testing.T) {
 	}
 }
 
+func TestLeaseNextRunRequiresLiveAssignmentToCallingWorker(t *testing.T) {
+	fs := newFakeStore()
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Minute)
+	assignedElsewhere := "other-worker"
+
+	unassigned := &model.JobRun{ID: "queued-run", Status: model.RunStatusQueued}
+	wrongOwner := &model.JobRun{
+		ID: "other-worker-run", Status: model.RunStatusAssigned,
+		AssignedWorkerID: &assignedElsewhere, AssignmentExpiresAt: &expiresAt,
+	}
+	fs.leaseCandidates = []leaseCandidate{
+		{run: unassigned, job: &model.Job{ID: "job-queued"}},
+		{run: wrongOwner, job: &model.Job{ID: "job-assigned"}},
+	}
+
+	run, _, err := fs.LeaseNextRun(context.Background(), "test-worker", time.Minute)
+	if err != nil {
+		t.Fatalf("LeaseNextRun() error = %v", err)
+	}
+	if run != nil {
+		t.Fatalf("LeaseNextRun() returned run %q without an assignment to test-worker", run.ID)
+	}
+	if unassigned.Status != model.RunStatusQueued {
+		t.Errorf("unassigned run status = %q, want queued", unassigned.Status)
+	}
+	if wrongOwner.Status != model.RunStatusAssigned {
+		t.Errorf("wrong-owner run status = %q, want assigned", wrongOwner.Status)
+	}
+
+	// Assignment is worker-specific: the intended owner can claim the same run.
+	run, _, err = fs.LeaseNextRun(context.Background(), assignedElsewhere, time.Minute)
+	if err != nil {
+		t.Fatalf("LeaseNextRun() for assigned worker error = %v", err)
+	}
+	if run == nil || run.ID != wrongOwner.ID {
+		t.Fatalf("LeaseNextRun() for assigned worker = %#v, want %q", run, wrongOwner.ID)
+	}
+	if run.Status != model.RunStatusLeased || run.LeasedBy == nil || *run.LeasedBy != assignedElsewhere {
+		t.Errorf("claimed run state = %#v, want leased by %q", run, assignedElsewhere)
+	}
+}
+
+func TestLeaseNextRunIgnoresExpiredAssignment(t *testing.T) {
+	fs := newFakeStore()
+	workerID := "test-worker"
+	expiredAt := time.Now().Add(-time.Second)
+	fs.leaseCandidates = []leaseCandidate{{
+		run: &model.JobRun{
+			ID: "expired-run", Status: model.RunStatusAssigned,
+			AssignedWorkerID: &workerID, AssignmentExpiresAt: &expiredAt,
+		},
+		job: &model.Job{ID: "job-1"},
+	}}
+
+	run, _, err := fs.LeaseNextRun(context.Background(), workerID, time.Minute)
+	if err != nil {
+		t.Fatalf("LeaseNextRun() error = %v", err)
+	}
+	if run != nil {
+		t.Fatalf("LeaseNextRun() returned expired assignment %q", run.ID)
+	}
+}
+
 func TestExecuteOne_FailureWithAttemptsRemaining(t *testing.T) {
 	fs := newFakeStore()
 	p := newTestPool(fs)
@@ -302,6 +366,14 @@ func TestRunRegistersCapabilitiesAndRetriesBeforeLeasing(t *testing.T) {
 	}
 	if len(fs.heartbeatCalls) < 2 {
 		t.Fatalf("registration attempts = %d, want failed attempt plus successful retry", len(fs.heartbeatCalls))
+	}
+	if len(fs.leaseWorkerIDs) == 0 {
+		t.Fatal("worker never attempted to lease its assigned runs")
+	}
+	for _, workerID := range fs.leaseWorkerIDs {
+		if workerID != "gpu-worker-1" {
+			t.Errorf("LeaseNextRun workerID = %q, want gpu-worker-1", workerID)
+		}
 	}
 	if successfulRegistrationIndex < 0 || firstLeaseIndex <= successfulRegistrationIndex {
 		t.Fatalf("operation order = %v, want successful registration before first lease", fs.operationOrder)

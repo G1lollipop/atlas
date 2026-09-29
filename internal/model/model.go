@@ -16,7 +16,9 @@ const (
 type RunStatus string
 
 const (
-	RunStatusPending   RunStatus = "pending"
+	RunStatusQueued    RunStatus = "queued"
+	RunStatusScheduled RunStatus = "scheduled"
+	RunStatusAssigned  RunStatus = "assigned"
 	RunStatusLeased    RunStatus = "leased"
 	RunStatusRunning   RunStatus = "running"
 	RunStatusSucceeded RunStatus = "succeeded"
@@ -49,20 +51,30 @@ type Job struct {
 
 // JobRun is a single execution attempt (or series of attempts) of a Job.
 type JobRun struct {
-	ID             string         `json:"id"`
-	JobID          string         `json:"job_id"`
-	Status         RunStatus      `json:"status"`
-	Attempt        int16          `json:"attempt"`
-	Priority       int16          `json:"priority"`
-	ScheduledAt    time.Time      `json:"scheduled_at"`
-	LeasedBy       *string        `json:"leased_by,omitempty"`
-	LeasedAt       *time.Time     `json:"leased_at,omitempty"`
-	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
-	StartedAt      *time.Time     `json:"started_at,omitempty"`
-	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
-	Result         map[string]any `json:"result,omitempty"`
-	Error          *string        `json:"error,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID                  string         `json:"id"`
+	JobID               string         `json:"job_id"`
+	Status              RunStatus      `json:"status"`
+	Attempt             int16          `json:"attempt"`
+	Priority            int16          `json:"priority"`
+	ScheduledAt         time.Time      `json:"scheduled_at"`
+	LeasedBy            *string        `json:"leased_by,omitempty"`
+	LeasedAt            *time.Time     `json:"leased_at,omitempty"`
+	LeaseExpiresAt      *time.Time     `json:"lease_expires_at,omitempty"`
+	AssignedWorkerID    *string        `json:"assigned_worker_id,omitempty"`
+	AssignedAt          *time.Time     `json:"assigned_at,omitempty"`
+	AssignmentExpiresAt *time.Time     `json:"assignment_expires_at,omitempty"`
+	StartedAt           *time.Time     `json:"started_at,omitempty"`
+	FinishedAt          *time.Time     `json:"finished_at,omitempty"`
+	Result              map[string]any `json:"result,omitempty"`
+	Error               *string        `json:"error,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+}
+
+// RunCandidate is a scheduled run together with the job requirements used by
+// the scheduler to choose a worker.
+type RunCandidate struct {
+	Run *JobRun `json:"run"`
+	Job *Job    `json:"job"`
 }
 
 type WorkerStatus string

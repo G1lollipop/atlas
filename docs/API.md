@@ -50,7 +50,7 @@ Create a job (one-shot, or recurring if `cron_expr` is set). Idempotent when
 | `name` | string | yes | Non-blank after trimming whitespace; also selects the worker handler. |
 | `payload` | object | no | Arbitrary JSON passed to the handler. |
 | `cron_expr` | string | no | Standard 5-field cron expression (`robfig/cron` `ParseStandard`); omit for one-shot jobs. |
-| `priority` | int16 | no | Higher runs first within the pending queue. |
+| `priority` | int16 | no | Contributes to the scheduler's priority-and-aging score; higher values start ahead. |
 | `workload_type` | string | no | Defaults to `generic` when omitted or blank; trimmed before storage. A descriptive workload class such as `embedding` or `inference`. |
 | `required_cpu_millis` | int32 | no | CPU request in millicores; defaults to `0`, must be non-negative. `2000` means two CPU cores. |
 | `required_memory_mb` | int32 | no | Host RAM request in MB; defaults to `0`, must be non-negative. |
@@ -131,7 +131,8 @@ corresponds to a real job — a nonexistent job ID simply returns an empty list,
 
 Lists workers that have sent a heartbeat, with their last-known status, capability, and
 resource availability. Resource capacity and labels come from the latest worker
-heartbeat; reservations are calculated from the worker's active leased and running jobs.
+heartbeat; reservations are calculated from the worker's assigned, leased, and
+running jobs.
 
 - **200** `[]model.Worker`
 - **500** on store failure
@@ -171,7 +172,7 @@ heartbeat; reservations are calculated from the worker's active leased and runni
 {
   "id": "uuid",
   "job_id": "uuid",
-  "status": "pending",
+  "status": "queued",
   "attempt": 0,
   "priority": 0,
   "scheduled_at": "2026-07-21T00:00:00Z",
@@ -186,8 +187,11 @@ heartbeat; reservations are calculated from the worker's active leased and runni
 }
 ```
 
-`status` is one of `pending`, `leased`, `running`, `succeeded`, `failed`, `dead` — see
-the lifecycle diagram in [ARCHITECTURE.md](ARCHITECTURE.md).
+`status` is one of `queued`, `scheduled`, `assigned`, `leased`, `running`,
+`succeeded`, `failed`, `dead`. Once assigned, the run also exposes
+`assigned_worker_id`, `assigned_at`, and `assignment_expires_at`; see
+[RESOURCE_SCHEDULING.md](RESOURCE_SCHEDULING.md) for the placement policy and
+recovery transitions.
 
 **`model.Worker`**
 

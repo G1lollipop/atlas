@@ -27,6 +27,8 @@ type fakeStore struct {
 	operationOrder       []string
 	upsertErrors         []error
 	leaseNotify          chan struct{}
+	leaseCandidates      []leaseCandidate
+	leaseWorkerIDs       []string
 	markRunningErr       error
 	failRunErr           error
 	completeRunErr       error
@@ -53,6 +55,11 @@ type failRunCall struct {
 type markDeadCall struct {
 	runID  string
 	reason string
+}
+
+type leaseCandidate struct {
+	run *model.JobRun
+	job *model.Job
 }
 
 func newFakeStore() *fakeStore {
@@ -89,21 +96,55 @@ func (f *fakeStore) HasActiveRun(ctx context.Context, jobID string) (bool, error
 func (f *fakeStore) CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (*model.JobRun, error) {
 	return nil, nil
 }
+func (f *fakeStore) ScheduleDueRuns(ctx context.Context) (int, error) { return 0, nil }
+func (f *fakeStore) RequeueExpiredAssignments(ctx context.Context) (int, error) {
+	return 0, nil
+}
+func (f *fakeStore) ListScheduledRuns(ctx context.Context, limit, offset int) ([]*model.RunCandidate, error) {
+	return nil, nil
+}
+func (f *fakeStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error) {
+	return false, nil
+}
 
 // --- Runs: worker lease lifecycle ---
 
 func (f *fakeStore) LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (*model.JobRun, *model.Job, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.operationOrder = append(f.operationOrder, "lease")
-	f.mu.Unlock()
+	f.leaseWorkerIDs = append(f.leaseWorkerIDs, workerID)
 	if f.leaseNotify != nil {
 		select {
 		case f.leaseNotify <- struct{}{}:
 		default:
 		}
 	}
+	for i, candidate := range f.leaseCandidates {
+		if candidate.run == nil || candidate.job == nil || candidate.run.Status != model.RunStatusAssigned {
+			continue
+		}
+		if candidate.run.AssignedWorkerID == nil || *candidate.run.AssignedWorkerID != workerID {
+			continue
+		}
+		if candidate.run.AssignmentExpiresAt == nil || !candidate.run.AssignmentExpiresAt.After(time.Now()) {
+			continue
+		}
+
+		now := time.Now().UTC()
+		candidate.run.Status = model.RunStatusLeased
+		candidate.run.LeasedBy = stringPointer(workerID)
+		candidate.run.LeasedAt = &now
+		leaseExpiresAt := now.Add(leaseDuration)
+		candidate.run.LeaseExpiresAt = &leaseExpiresAt
+		candidate.run.Attempt++
+		f.leaseCandidates = append(f.leaseCandidates[:i], f.leaseCandidates[i+1:]...)
+		return candidate.run, candidate.job, nil
+	}
 	return nil, nil, nil
 }
+
+func stringPointer(value string) *string { return &value }
 
 type extendLeaseCall struct {
 	runID         string

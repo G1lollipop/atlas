@@ -329,11 +329,11 @@ components:
           type: integer
           format: int16
           default: 0
-          description: Higher runs first
+          description: Higher values receive a larger scheduler score; waiting time can overcome the priority gap.
         workload_type:
           type: string
           default: generic
-          description: Workload class used for observability and scheduling policy.
+          description: Descriptive workload class; placement uses explicit resource requirements.
           example: embedding
         required_cpu_millis:
           type: integer
@@ -417,7 +417,7 @@ components:
           format: uuid
         status:
           type: string
-          enum: [pending, leased, running, succeeded, failed, dead]
+          enum: [queued, scheduled, assigned, leased, running, succeeded, failed, dead]
         attempt:
           type: integer
           format: int16
@@ -427,6 +427,19 @@ components:
         scheduled_at:
           type: string
           format: date-time
+        assigned_worker_id:
+          type: string
+          nullable: true
+          description: Worker selected by the scheduler; retained for placement history.
+        assigned_at:
+          type: string
+          format: date-time
+          nullable: true
+        assignment_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Deadline to lease an assigned run before it returns to the queue.
         leased_by:
           type: string
           nullable: true
@@ -501,11 +514,11 @@ components:
         current_cpu_reserved:
           type: integer
           format: int64
-          description: CPU millicores currently reserved by leased/running work.
+          description: CPU millicores reserved by assigned, leased, and running work.
         current_memory_reserved:
           type: integer
           format: int64
-          description: Host memory megabytes currently reserved by leased/running work.
+          description: Host memory megabytes reserved by assigned, leased, and running work.
         current_gpu_reserved:
           type: integer
           format: int64

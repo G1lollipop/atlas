@@ -34,16 +34,28 @@ type Store interface {
 	// --- Runs: scheduling / promotion ---
 	// LatestRunForJob returns the most recently created run for a job, or ErrNotFound if none exists.
 	LatestRunForJob(ctx context.Context, jobID string) (*model.JobRun, error)
-	// HasActiveRun reports whether jobID has a run in pending/leased/running state
-	// (used to avoid double-scheduling the same job concurrently).
+	// HasActiveRun reports whether jobID has queued, scheduled, assigned, leased,
+	// or running work (used to avoid double-scheduling the same job concurrently).
 	HasActiveRun(ctx context.Context, jobID string) (bool, error)
-	// CreateRun inserts a new pending run for jobID.
+	// CreateRun inserts a new queued run for jobID.
 	CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (*model.JobRun, error)
+	// ScheduleDueRuns advances due queued runs to scheduled.
+	ScheduleDueRuns(ctx context.Context) (int, error)
+	// RequeueExpiredAssignments returns expired assignments to the queue so the
+	// scheduler can place them again.
+	RequeueExpiredAssignments(ctx context.Context) (int, error)
+	// ListScheduledRuns returns a page of due scheduled runs with their job
+	// requirements, ordered by priority plus age for deterministic policy evaluation.
+	ListScheduledRuns(ctx context.Context, limit, offset int) ([]*model.RunCandidate, error)
+	// AssignRun atomically reserves a scheduled run on a live worker if its current
+	// capabilities and unreserved capacity satisfy the job requirements. It returns
+	// false for stale workers, contention, or ineligible capacity.
+	AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error)
 
 	// --- Runs: worker lease lifecycle ---
-	// LeaseNextRun atomically claims the highest-priority, oldest pending run whose
-	// resource requirements fit the registered worker's currently available capacity.
-	// Returns (nil, nil, nil) if no eligible run is available.
+	// LeaseNextRun atomically claims the highest-ranked unexpired assignment made to
+	// workerID (priority plus waiting age), rechecking available capacity. It never
+	// searches for unassigned runs. Returns (nil, nil, nil) if none is eligible.
 	LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (*model.JobRun, *model.Job, error)
 	// ExtendLease pushes lease_expires_at forward only for the current owner of an
 	// active run; called periodically by the worker while executing.
@@ -52,18 +64,19 @@ type Store interface {
 	// an expired/reclaimed execution from changing a later attempt's state.
 	MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error
 	CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error
-	// FailRun records an error. If requeue is true the run goes back to pending with
-	// attempt+1 and scheduled_at = now+backoff; otherwise (attempts exhausted) the
-	// caller should follow up with MarkDead.
+	// FailRun records an error. If requeue is true the run goes back to queued at
+	// now+backoff; its attempt increments when a worker next leases it. Otherwise
+	// (attempts exhausted) the caller should follow up with MarkDead.
 	FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error
 	MarkDead(ctx context.Context, runID string, reason string) error
 	// ReclaimExpiredLeases resets any leased/running run whose lease has expired back
-	// to pending (crash recovery for workers that died mid-execution). Returns the count reclaimed.
+	// to queued (crash recovery for workers that died mid-execution). Returns the count reclaimed.
 	ReclaimExpiredLeases(ctx context.Context) (int, error)
 
 	GetRun(ctx context.Context, id string) (*model.JobRun, error)
 	ListJobRuns(ctx context.Context, jobID string, limit int) ([]*model.JobRun, error)
-	// CountPendingRuns is used to publish the atlas_queue_depth gauge.
+	// CountPendingRuns counts the unassigned backlog (queued + scheduled) for the
+	// atlas_queue_depth gauge.
 	CountPendingRuns(ctx context.Context) (int, error)
 
 	// --- Workers ---

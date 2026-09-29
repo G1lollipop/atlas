@@ -45,6 +45,9 @@ func TestPromoteOnce_NoDepsNoPriorRun(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("expected 1 run created for j1, got %d", len(runs))
 	}
+	if runs[0].Status != model.RunStatusQueued {
+		t.Fatalf("newly promoted run status = %q, want queued", runs[0].Status)
+	}
 }
 
 func TestPromoteOnce_ActiveRunNotDoublePromoted(t *testing.T) {
@@ -58,7 +61,7 @@ func TestPromoteOnce_ActiveRunNotDoublePromoted(t *testing.T) {
 
 	p := newPromoter(fs)
 
-	// First pass promotes it and leaves an active (pending) run outstanding.
+	// First pass promotes it and leaves an active (queued) run outstanding.
 	promoted, err := p.PromoteOnce(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -67,7 +70,7 @@ func TestPromoteOnce_ActiveRunNotDoublePromoted(t *testing.T) {
 		t.Fatalf("expected 1 job promoted on first pass, got %d", promoted)
 	}
 
-	// Second pass: the run from the first pass is still active (pending), so this
+	// Second pass: the run from the first pass is still active (queued), so this
 	// one-shot job must not be scheduled again.
 	promoted, err = p.PromoteOnce(context.Background())
 	if err != nil {

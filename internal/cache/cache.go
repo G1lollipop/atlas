@@ -12,11 +12,11 @@
 //     time-boxed cache with active invalidation is the only safe option — this is the
 //     classic "get this wrong and you serve a paused job as active" bug class.
 //   - JobRun: only cached once it reaches a truly terminal state (succeeded or dead —
-//     NOT "failed", since a failed run with retries left transitions back to pending
-//     almost immediately and "failed" without retries is followed by MarkDead within
-//     the same worker call, making the window where "failed" is stable too narrow to
-//     trust). A terminal run's fields never change again, so it's cached with a long
-//     TTL and no invalidation is needed at all.
+//     NOT "failed", since a failed run with retries left transitions back to queued
+//     and is later scheduled again, while "failed" without retries is followed by
+//     MarkDead within the same worker call, making the window where "failed" is stable
+//     too narrow to trust). A terminal run's fields never change again, so it's cached
+//     with a long TTL and no invalidation is needed at all.
 package cache
 
 import (

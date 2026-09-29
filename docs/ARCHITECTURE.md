@@ -2,6 +2,9 @@
 
 > **Historical upstream material:** This document was inherited from Taskflow at commit `64bb4d9d50bc61045f49abf2558a151c7e5973d8`. Its design notes and verification claims describe that revision and have not been reproduced for Atlas. See [PROVENANCE.md](PROVENANCE.md).
 
+Atlas's current assignment lifecycle and placement policy are documented in
+[RESOURCE_SCHEDULING.md](RESOURCE_SCHEDULING.md).
+
 ## Overview
 
 ```mermaid

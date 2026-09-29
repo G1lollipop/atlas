@@ -1,52 +1,63 @@
-# Atlas resource scheduling
+# Atlas assignment and scheduling policy
 
-Atlas keeps the existing job lifecycle (`pending` → `leased` → `running` →
-`succeeded`, with retries and dead letters) and adds resource-aware placement when a
-worker leases a pending run. The scheduler promoter still determines *when* a job
-becomes pending; the lease query determines *which worker* can run it.
+Atlas separates deciding **when** a run is ready from deciding **where** it runs.
+The elected scheduler creates a `queued` run for a due, dependency-satisfied job.
+It moves due queued runs to `scheduled`, scores each feasible run–worker pair, and
+atomically records `assigned_worker_id`. A worker only leases an unexpired run
+assigned to its own ID. Execution then follows `leased` → `running` →
+`succeeded`; exhausted failures enter the dead letter state.
 
-Create a job with its resource requirements. CPU is measured in millicores, and
-memory and GPU memory are measured in MB. GPU memory is the minimum memory **per
-GPU** requested; `required_accelerator` matches the worker's GPU type without case
-sensitivity. `workload_type` classifies the work and does not imply hidden resource
-requirements.
-
-```json
-{
-  "name": "echo",
-  "workload_type": "inference",
-  "priority": 20,
-  "required_cpu_millis": 2000,
-  "required_memory_mb": 4096,
-  "required_gpu_count": 1,
-  "required_gpu_memory_mb": 16384,
-  "required_accelerator": "NVIDIA-A100",
-  "timeout_seconds": 300,
-  "max_attempts": 5
-}
+```text
+queued → scheduled → assigned → leased → running → succeeded
+assigned → queued     (assignment expires before lease)
+leased/running → queued (lease expires)
+running → queued      (retry with backoff)
+running → failed → dead (attempts exhausted)
 ```
 
-Workers advertise capacity and labels at startup and on every heartbeat through
-`WORKER_CPU_CAPACITY_MILLIS`, `WORKER_MEMORY_CAPACITY_MB`, `WORKER_GPU_COUNT`,
-`WORKER_GPU_TYPE`, `WORKER_GPU_MEMORY_MB`, and `WORKER_LABELS` (a JSON string map).
-`GET /v1/workers` shows those capabilities, the resources reserved by the worker's
-active `leased` and `running` runs, and the remaining available resources. The
-server derives reservations from active leases rather than trusting a worker's
-self-reported free capacity. A heartbeat updates capacity and labels without
-resetting reservations.
+The scheduler is leader-elected with a PostgreSQL advisory lock. Every leader pass
+reclaims expired worker leases, returns expired assignments to the queue, schedules
+due runs, and assigns feasible runs. The assignment TTL is 30 seconds. Workers
+must have sent a heartbeat within 30 seconds to receive a new assignment. An
+expired assignment or lease releases its reservation so another worker can be
+chosen. The database validates worker capacity again in the assignment
+transaction; the scheduler's read of available resources is a planning snapshot.
 
-Within a transaction, a worker locks its registration row, sums its current
-reservations, then selects the highest-priority due `pending` run whose CPU,
-memory, GPU count, per-GPU memory, total GPU memory, and accelerator type fit.
-`FOR UPDATE SKIP LOCKED` keeps concurrent claims from taking the same run. The
-worker-row lock also prevents its own concurrent pollers from exceeding capacity.
-An incompatible run stays `pending` and does not block lower-priority work that
-fits. Completing, retrying, dead-lettering, or reclaiming a run releases its
-reservation through the run's status change.
+Jobs declare CPU in millicores, host memory in MB, GPU count, memory per GPU in
+MB, and an optional accelerator type. Workers advertise capacity, GPU type, and
+labels on every heartbeat. `GET /v1/workers` reports available resources after
+subtracting the requirements of `assigned`, `leased`, and `running` work. Worker
+heartbeats cannot overwrite those server-derived reservations. A GPU request must
+fit both the per-device GPU memory and the aggregate free GPU memory.
 
-Capacity is a scheduling declaration, not operating-system enforcement. A handler
-can use more resources than requested, and jobs with zero requirements remain
-eligible on any registered worker for compatibility. Labels are exposed for
-inventory but are not placement constraints in this version. GPU memory is modeled
-as equal capacity per GPU; heterogeneous devices within one worker are not yet
-represented.
+The first scheduling score is:
+
+```text
+score = run.priority × 3600
+      + seconds_waiting_since_scheduled_at
+      − GPU_fragmentation_penalty
+```
+
+The GPU penalty is the fraction of per-device memory left unused by a GPU job,
+bounded between 0 and 1. With the same job and sufficient free resources, a 4GB
+request therefore prefers an 8GB GPU over a 48GB GPU. One priority point equals
+one hour of waiting. Aging is unbounded: a long-waiting low-priority run can
+outrank newly arriving higher-priority runs. Equal scores use the earlier
+`scheduled_at` first, then stable run and worker IDs. The database makes the
+final fit and assignment decision under row locks, so concurrent scheduler
+attempts cannot reserve the same run twice or overbook a worker.
+
+For example, an embedding job can request `required_cpu_millis: 2000`,
+`required_memory_mb: 4096`, and no GPU. An inference job can request
+`required_gpu_count: 1` and `required_gpu_memory_mb: 16384`. `workload_type`
+labels the work but does not silently add resource requirements. Existing jobs
+with zero requirements remain eligible on any registered worker.
+
+Capacity is a scheduling declaration, not operating-system enforcement. Labels
+are inventory metadata, not placement constraints in this version. GPU devices
+within a worker are modeled as identical, with aggregate free VRAM rather than
+per-device live reservations; heterogeneous GPUs or fragmented per-device
+allocations need a richer inventory model. Each scheduler pass currently scans
+all scheduled runs in pages and scores feasible run–worker pairs in memory, so
+very large backlogs will need a more selective candidate index or bounded
+incremental dispatch.

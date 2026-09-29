@@ -36,7 +36,7 @@ var (
 
 	QueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "atlas_queue_depth",
-		Help: "Number of runs currently in pending status.",
+		Help: "Number of runs currently in queued or scheduled status.",
 	})
 
 	LeasesReclaimed = promauto.NewCounter(prometheus.CounterOpts{

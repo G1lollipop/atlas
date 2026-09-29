@@ -1,6 +1,6 @@
-// Command worker leases pending job runs from Postgres and executes them via a small
-// built-in handler registry (echo/sleep/http_call). A real deployment would register
-// domain-specific handlers here instead of (or in addition to) the examples.
+// Command worker leases job runs assigned to its worker from Postgres and executes
+// them via a small built-in handler registry (echo/sleep/http_call). A real deployment
+// would register domain-specific handlers here instead of (or in addition to) the examples.
 package main
 
 import (
