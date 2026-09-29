@@ -32,6 +32,7 @@ type Promoter struct {
 	Elector  lock.Elector
 	Logger   *slog.Logger
 	Interval time.Duration
+	Policy   SchedulingPolicy
 }
 
 // NewPromoter constructs a Promoter ready to Run.
@@ -124,7 +125,7 @@ func (p *Promoter) PromoteOnce(ctx context.Context) (int, error) {
 // DispatchOnce recovers expired ownership, schedules queued runs, and assigns work
 // to compatible workers. Run invokes it only while this replica holds leadership.
 func (p *Promoter) DispatchOnce(ctx context.Context) (int, error) {
-	return NewDispatcher(p.Store, p.Logger).DispatchOnce(ctx)
+	return NewDispatcherWithPolicy(p.Store, p.Logger, p.Policy).DispatchOnce(ctx)
 }
 
 // Run drives promotion and assignment until ctx is cancelled. Leadership is

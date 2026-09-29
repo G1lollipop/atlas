@@ -34,10 +34,18 @@ type Dispatcher struct {
 	Store  store.Store
 	Logger *slog.Logger
 	Now    func() time.Time
+	Policy SchedulingPolicy
 }
 
 func NewDispatcher(st store.Store, logger *slog.Logger) *Dispatcher {
-	return &Dispatcher{Store: st, Logger: logger, Now: time.Now}
+	return NewDispatcherWithPolicy(st, logger, PriorityAware{})
+}
+
+func NewDispatcherWithPolicy(st store.Store, logger *slog.Logger, policy SchedulingPolicy) *Dispatcher {
+	if policy == nil {
+		policy = PriorityAware{}
+	}
+	return &Dispatcher{Store: st, Logger: logger, Now: time.Now, Policy: policy}
 }
 
 func (d *Dispatcher) now() time.Time {
@@ -104,7 +112,14 @@ func (d *Dispatcher) assignScheduledRuns(ctx context.Context) (int, error) {
 	}
 	workers = cloneWorkers(workers)
 	now := d.now()
-	pairs := rankedAssignments(candidates, workers, now)
+	policy := d.Policy
+	if policy == nil {
+		policy = PriorityAware{}
+	}
+	pairs, err := policyAssignments(candidates, workers, now, policy)
+	if err != nil {
+		return 0, fmt.Errorf("scheduler: select worker assignments: %w", err)
+	}
 	candidateByID := make(map[string]*model.RunCandidate, len(candidates))
 	workerByID := make(map[string]*model.Worker, len(workers))
 	for _, candidate := range candidates {
@@ -174,9 +189,92 @@ type assignmentPair struct {
 }
 
 type scoredAssignment struct {
-	pair      assignmentPair
-	score     float64
-	scheduled time.Time
+	pair       assignmentPair
+	score      float64
+	scheduled  time.Time
+	workerRank int
+}
+
+func policyAssignments(candidates []*model.RunCandidate, workers []*model.Worker, now time.Time, policy SchedulingPolicy) ([]scoredAssignment, error) {
+	pairs := make([]scoredAssignment, 0)
+	priorityAware := isPriorityAware(policy)
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.Run == nil || candidate.Job == nil {
+			continue
+		}
+		remaining := orderedWorkers(workers)
+		workerRank := 0
+		for len(remaining) > 0 {
+			worker, err := policy.SelectWorker(candidate, remaining, now)
+			if err != nil {
+				return nil, fmt.Errorf("run %s: %w", candidate.Run.ID, err)
+			}
+			if worker == nil {
+				// No feasible worker is a normal scheduling outcome. Keep scanning
+				// later candidates so an incompatible head cannot block the queue.
+				break
+			}
+			index := -1
+			for i, available := range remaining {
+				if available.ID == worker.ID {
+					index = i
+					worker = available
+					break
+				}
+			}
+			if index < 0 {
+				return nil, fmt.Errorf("policy %T selected worker %q outside the available worker set", policy, worker.ID)
+			}
+			if !WorkerCanRun(candidate.Job, worker, now, HeartbeatTTL) {
+				return nil, fmt.Errorf("policy %T selected infeasible worker %q for run %q", policy, worker.ID, candidate.Run.ID)
+			}
+
+			score := SchedulingScore(candidate.Run, candidate.Job, worker, now)
+			if !priorityAware {
+				score = queueSchedulingScore(candidate.Run, now)
+			}
+			pairs = append(pairs, scoredAssignment{
+				pair:  assignmentPair{runID: candidate.Run.ID, workerID: worker.ID},
+				score: score, scheduled: candidate.Run.ScheduledAt, workerRank: workerRank,
+			})
+			workerRank++
+			remaining = append(remaining[:index], remaining[index+1:]...)
+		}
+	}
+
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].score != pairs[j].score {
+			return pairs[i].score > pairs[j].score
+		}
+		if !pairs[i].scheduled.Equal(pairs[j].scheduled) {
+			return pairs[i].scheduled.Before(pairs[j].scheduled)
+		}
+		if pairs[i].pair.runID != pairs[j].pair.runID {
+			return pairs[i].pair.runID < pairs[j].pair.runID
+		}
+		if !priorityAware && pairs[i].workerRank != pairs[j].workerRank {
+			return pairs[i].workerRank < pairs[j].workerRank
+		}
+		return pairs[i].pair.workerID < pairs[j].pair.workerID
+	})
+	return pairs, nil
+}
+
+func isPriorityAware(policy SchedulingPolicy) bool {
+	switch policy.(type) {
+	case PriorityAware, *PriorityAware:
+		return true
+	default:
+		return false
+	}
+}
+
+func queueSchedulingScore(run *model.JobRun, now time.Time) float64 {
+	if run == nil {
+		return math.Inf(-1)
+	}
+	waitSeconds := math.Max(0, now.Sub(run.ScheduledAt).Seconds())
+	return float64(run.Priority)*PriorityWeight.Seconds() + waitSeconds
 }
 
 func bestAssignment(candidates []*model.RunCandidate, workers []*model.Worker, now time.Time, attempted map[assignmentPair]struct{}) (assignmentPair, bool) {

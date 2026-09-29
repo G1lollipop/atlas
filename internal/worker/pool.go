@@ -5,6 +5,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -32,11 +33,13 @@ type Pool struct {
 	PollInterval  time.Duration
 	Logger        *slog.Logger
 
-	capabilities model.Worker
-	hostname     string
-	startedAt    time.Time
-	handlers     map[string]Handler
-	mu           sync.RWMutex
+	capabilities   model.Worker
+	hostname       string
+	startedAt      time.Time
+	handlers       map[string]Handler
+	executionSlots chan struct{}
+	resources      *resourceAdmission
+	mu             sync.RWMutex
 }
 
 func NewPool(st store.Store, workerID string, concurrency int, leaseDuration, pollInterval time.Duration, log *slog.Logger) *Pool {
@@ -45,21 +48,23 @@ func NewPool(st store.Store, workerID string, concurrency int, leaseDuration, po
 		hostname = "unknown"
 	}
 	return &Pool{
-		Store:         st,
-		WorkerID:      workerID,
-		Concurrency:   concurrency,
-		LeaseDuration: leaseDuration,
-		PollInterval:  pollInterval,
-		Logger:        log,
-		hostname:      hostname,
-		startedAt:     time.Now().UTC(),
-		handlers:      make(map[string]Handler),
+		Store:          st,
+		WorkerID:       workerID,
+		Concurrency:    concurrency,
+		LeaseDuration:  leaseDuration,
+		PollInterval:   pollInterval,
+		Logger:         log,
+		hostname:       hostname,
+		startedAt:      time.Now().UTC(),
+		handlers:       make(map[string]Handler),
+		executionSlots: make(chan struct{}, max(concurrency, 0)),
+		resources:      newResourceAdmission(model.Worker{}),
 	}
 }
 
-// SetCapabilities configures the resources this worker advertises. The Pool
-// writes only capacity and labels; reservation and available-resource counters
-// are derived by the store from active leases.
+// SetCapabilities configures the resources this worker advertises. The store
+// remains authoritative for fleet-wide reservations; the pool mirrors capacity
+// locally to gate concurrent handler execution.
 func (p *Pool) SetCapabilities(capabilities model.Worker) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -72,6 +77,7 @@ func (p *Pool) SetCapabilities(capabilities model.Worker) {
 	for key, value := range capabilities.Labels {
 		p.capabilities.Labels[key] = value
 	}
+	p.resources.setCapacity(capabilities)
 }
 
 // RegisterHandler binds h to jobName; executeOne looks handlers up by model.Job.Name.
@@ -81,10 +87,27 @@ func (p *Pool) RegisterHandler(jobName string, h Handler) {
 	p.handlers[jobName] = h
 }
 
-// Run blocks until ctx is cancelled, running Concurrency loops that lease only
-// work assigned to this worker, plus one heartbeat loop and one janitor
-// (lease-reclaim) loop.
+// Run blocks until ctx is cancelled. Positive Concurrency runs that many bounded
+// lease loops alongside one heartbeat loop and one janitor. Zero is a janitor-only
+// mode; the pool does not register as an executable worker in that mode.
 func (p *Pool) Run(ctx context.Context) error {
+	if p.Concurrency < 0 {
+		return fmt.Errorf("worker concurrency must be zero or greater, got %d", p.Concurrency)
+	}
+	if p.Concurrency == 0 {
+		p.Logger.Info("worker running in janitor-only mode; job leasing is disabled", "worker_id", p.WorkerID)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.janitorLoop(ctx)
+		}()
+
+		<-ctx.Done()
+		wg.Wait()
+		return ctx.Err()
+	}
+
 	// A worker must be visible to the scheduler before it can be assigned work.
 	// Retry transient store failures here, before any leasing goroutine starts.
 	for ctx.Err() == nil {
@@ -158,11 +181,20 @@ func (p *Pool) sendHeartbeat(ctx context.Context) error {
 // leaseLoop is the body run by each of the Concurrency worker goroutines.
 func (p *Pool) leaseLoop(ctx context.Context) {
 	for {
-		if ctx.Err() != nil {
+		if !p.acquireExecutionSlot(ctx) {
 			return
 		}
 
-		run, job, err := p.Store.LeaseNextRun(ctx, p.WorkerID, p.LeaseDuration)
+		var run *model.JobRun
+		var job *model.Job
+		var err error
+		func() {
+			defer p.releaseExecutionSlot()
+			run, job, err = p.Store.LeaseNextRun(ctx, p.WorkerID, p.LeaseDuration)
+			if err == nil && run != nil {
+				p.executeOne(ctx, run, job)
+			}
+		}()
 		if err != nil {
 			p.Logger.Error("lease next run failed", "error", err)
 			if !sleepCtx(ctx, p.PollInterval) {
@@ -176,9 +208,32 @@ func (p *Pool) leaseLoop(ctx context.Context) {
 			}
 			continue
 		}
-
-		p.executeOne(ctx, run, job)
 	}
+}
+
+// acquireExecutionSlot reserves one bounded execution slot before the worker
+// asks the store for a lease. This avoids holding a database lease while waiting
+// for an in-process goroutine slot.
+func (p *Pool) acquireExecutionSlot(ctx context.Context) bool {
+	if p.executionSlots == nil {
+		return false
+	}
+	select {
+	case p.executionSlots <- struct{}{}:
+		// If cancellation raced with the send, return the slot rather than
+		// starting another store call during shutdown.
+		if ctx.Err() != nil {
+			p.releaseExecutionSlot()
+			return false
+		}
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (p *Pool) releaseExecutionSlot() {
+	<-p.executionSlots
 }
 
 // sleepCtx sleeps for d or until ctx is done, whichever comes first, reporting
@@ -224,6 +279,16 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 			"run_id", run.ID, "job_id", job.ID, "job_name", job.Name)
 		return
 	}
+
+	releaseResources, err := p.resources.tryAcquire(job)
+	if err != nil {
+		// LeaseNextRun has already atomically reserved this run in the database.
+		// This local guard is a second line of defense for one process; requeue a
+		// mismatch so the database reservation is released immediately.
+		p.rejectResourceAdmission(ctx, run, job, err, span)
+		return
+	}
+	defer releaseResources()
 
 	if err := p.Store.MarkRunning(ctx, run.ID, p.WorkerID, run.Attempt); err != nil {
 		p.Logger.Error("mark running failed", "run_id", run.ID, "error", err)
@@ -297,6 +362,43 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	p.Logger.Error("job run dead: max attempts exceeded",
 		"run_id", run.ID, "job_id", job.ID, "job_name", job.Name,
 		"attempt", run.Attempt, "max_attempts", job.MaxAttempts, "error", err)
+}
+
+func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, job *model.Job, admissionErr error, span trace.Span) {
+	message := "worker resource admission rejected: " + admissionErr.Error()
+	span.RecordError(admissionErr)
+	span.SetStatus(codes.Error, "resource admission rejected")
+
+	if run.Attempt < job.MaxAttempts {
+		backoff := p.PollInterval
+		if backoff <= 0 {
+			backoff = time.Second
+		}
+		if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, true, backoff); err != nil {
+			p.Logger.Error("requeue run after resource admission rejection failed",
+				"run_id", run.ID, "admission_error", admissionErr, "error", err)
+			return
+		}
+		metrics.RunsCompleted.WithLabelValues("failed").Inc()
+		p.Logger.Error("run rejected by local resource admission; retrying",
+			"run_id", run.ID, "job_id", job.ID, "attempt", run.Attempt,
+			"max_attempts", job.MaxAttempts, "error", admissionErr, "backoff", backoff)
+		return
+	}
+
+	if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, false, 0); err != nil {
+		p.Logger.Error("fail run after resource admission rejection failed",
+			"run_id", run.ID, "admission_error", admissionErr, "error", err)
+		return
+	}
+	if err := p.Store.MarkDead(ctx, run.ID, "worker resource admission rejected after max attempts"); err != nil {
+		p.Logger.Error("mark resource-rejected run dead failed", "run_id", run.ID, "error", err)
+		return
+	}
+	metrics.RunsCompleted.WithLabelValues("dead").Inc()
+	p.Logger.Error("run rejected by local resource admission after max attempts",
+		"run_id", run.ID, "job_id", job.ID, "attempt", run.Attempt,
+		"max_attempts", job.MaxAttempts, "error", admissionErr)
 }
 
 // startLeaseRenewal keeps an executing run leased while its handler is active.

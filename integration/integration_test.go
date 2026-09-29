@@ -248,6 +248,110 @@ func TestResourceAwareAssignmentsAndReservationRelease(t *testing.T) {
 	}
 }
 
+func TestConcurrentMemoryReservationsAcrossPostgresPools(t *testing.T) {
+	st, ctx := openResourceTestStore(t)
+	peerStore := openPeerResourceTestStore(t, ctx, st)
+	workerID := "memory-race-" + uuid.NewString()
+	registerTestWorker(t, ctx, st, model.Worker{
+		ID: workerID, Hostname: "memory-race-host", CPUCapacity: 4000, MemoryCapacityMB: 16 * 1024,
+	})
+
+	firstJob := createResourceTestJob(t, ctx, st, model.NewJobInput{
+		Name: "memory-heavy-a-" + uuid.NewString(), RequiredCPUMillis: 1000,
+		RequiredMemoryMB: 12 * 1024, MaxAttempts: 1, TimeoutSeconds: 30,
+	})
+	secondJob := createResourceTestJob(t, ctx, st, model.NewJobInput{
+		Name: "memory-heavy-b-" + uuid.NewString(), RequiredCPUMillis: 1000,
+		RequiredMemoryMB: 12 * 1024, MaxAttempts: 1, TimeoutSeconds: 30,
+	})
+	firstRun := createResourceTestRun(t, ctx, st, firstJob.ID, 30000)
+	secondRun := createResourceTestRun(t, ctx, st, secondJob.ID, 29999)
+	if scheduled, err := st.ScheduleDueRuns(ctx); err != nil || scheduled != 2 {
+		t.Fatalf("schedule memory reservations: count=%d error=%v", scheduled, err)
+	}
+
+	type assignResult struct {
+		runID string
+		ok    bool
+		err   error
+	}
+	start := make(chan struct{})
+	ready := make(chan struct{}, 2)
+	results := make(chan assignResult, 2)
+	for i, runID := range []string{firstRun.ID, secondRun.ID} {
+		assignmentStore := st
+		if i == 1 {
+			assignmentStore = peerStore
+		}
+		go func(runID string, assignmentStore *store.PostgresStore) {
+			ready <- struct{}{}
+			<-start
+			ok, err := assignmentStore.AssignRun(ctx, runID, workerID, scheduler.AssignmentTTL, scheduler.HeartbeatTTL)
+			results <- assignResult{runID: runID, ok: ok, err: err}
+		}(runID, assignmentStore)
+	}
+	<-ready
+	<-ready
+	close(start)
+
+	assigned := make([]string, 0, 1)
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent assignment for %s: %v", result.runID, result.err)
+		}
+		if result.ok {
+			assigned = append(assigned, result.runID)
+		}
+	}
+	if len(assigned) != 1 {
+		t.Fatalf("a 16 GiB worker must reserve capacity for exactly one concurrent 12 GiB job, assigned=%v", assigned)
+	}
+	assignedID := assigned[0]
+	unassignedID := firstRun.ID
+	if assignedID == unassignedID {
+		unassignedID = secondRun.ID
+	}
+	workers, err := st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("list worker resources after concurrent assignment: %v", err)
+	}
+	assertWorkerResources(t, workers, workerID, 3000, 4*1024, 0, 0)
+	assertRunAssignedTo(t, ctx, st, assignedID, workerID)
+	if run, err := st.GetRun(ctx, unassignedID); err != nil || run.Status != model.RunStatusScheduled {
+		t.Fatalf("losing reservation must remain schedulable: run=%+v error=%v", run, err)
+	}
+	if ok, err := peerStore.AssignRun(ctx, unassignedID, workerID, scheduler.AssignmentTTL, scheduler.HeartbeatTTL); err != nil || ok {
+		t.Fatalf("retry losing reservation while capacity is occupied: assigned=%v error=%v", ok, err)
+	}
+	workers, err = st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("list worker resources after rejected reservation retry: %v", err)
+	}
+	assertWorkerResources(t, workers, workerID, 3000, 4*1024, 0, 0)
+
+	// Completing the assigned run releases its reservation, allowing the other
+	// 12 GiB job to be assigned through the independent pool.
+	leased, _, err := st.LeaseNextRun(ctx, workerID, time.Minute)
+	if err != nil || leased == nil || leased.ID != assignedID {
+		t.Fatalf("lease the assigned memory-heavy run: run=%+v error=%v", leased, err)
+	}
+	if err := st.MarkRunning(ctx, leased.ID, workerID, leased.Attempt); err != nil {
+		t.Fatalf("mark memory-heavy run running: %v", err)
+	}
+	if err := st.CompleteRun(ctx, leased.ID, workerID, leased.Attempt, map[string]any{"ok": true}); err != nil {
+		t.Fatalf("complete memory-heavy run: %v", err)
+	}
+	workers, err = st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("list worker resources after completion: %v", err)
+	}
+	assertWorkerResources(t, workers, workerID, 4000, 16*1024, 0, 0)
+	if ok, err := peerStore.AssignRun(ctx, unassignedID, workerID, scheduler.AssignmentTTL, scheduler.HeartbeatTTL); err != nil || !ok {
+		t.Fatalf("completion must release memory reservation: assigned=%v error=%v", ok, err)
+	}
+}
+
 func TestAssignmentExpiryReclaimAndConcurrentOwnership(t *testing.T) {
 	st, ctx := openResourceTestStore(t)
 	workerID := "assignment-concurrent-" + uuid.NewString()
@@ -522,6 +626,27 @@ func openResourceTestStore(t *testing.T) (*store.PostgresStore, context.Context)
 		t.Fatalf("run migrations: %v", err)
 	}
 	return st, ctx
+}
+
+func openPeerResourceTestStore(t *testing.T, ctx context.Context, st *store.PostgresStore) *store.PostgresStore {
+	t.Helper()
+	var schema string
+	if err := st.Pool().QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatalf("read isolated test schema: %v", err)
+	}
+	dbURL, err := url.Parse(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("parse database URL for peer pool: %v", err)
+	}
+	query := dbURL.Query()
+	query.Set("search_path", schema)
+	dbURL.RawQuery = query.Encode()
+	peerStore, err := store.New(ctx, dbURL.String())
+	if err != nil {
+		t.Fatalf("connect independent store pool: %v", err)
+	}
+	t.Cleanup(peerStore.Close)
+	return peerStore
 }
 
 func registerTestWorker(t *testing.T, ctx context.Context, st *store.PostgresStore, worker model.Worker) {

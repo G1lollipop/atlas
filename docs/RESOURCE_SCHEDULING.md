@@ -30,7 +30,20 @@ subtracting the requirements of `assigned`, `leased`, and `running` work. Worker
 heartbeats cannot overwrite those server-derived reservations. A GPU request must
 fit both the per-device GPU memory and the aggregate free GPU memory.
 
-The first scheduling score is:
+`SCHEDULING_POLICY` selects a placement strategy at scheduler startup. The
+default is `priority-aware`; the other values are `first-fit`, `least-loaded`,
+and `best-fit`. Each strategy checks worker liveness and resource fit. All four
+consider scheduled runs by priority plus waiting age, then differ in how they
+choose a worker:
+
+| Policy | Worker choice | Trade-off |
+| --- | --- | --- |
+| `first-fit` | First feasible worker in stable worker-ID order | Simple, but can concentrate work and fragment capacity. |
+| `least-loaded` | Lowest normalized utilization of the resources this job requests | Spreads load, but may leave small unusable gaps. |
+| `best-fit` | Least normalized capacity left after this job | Packs work tightly, but can concentrate load. |
+| `priority-aware` | Highest run/worker score, with a GPU memory fragmentation penalty | Keeps urgency and aging in the placement decision while preferring a closer GPU fit. |
+
+The default strategy scores each feasible run–worker pair as:
 
 ```text
 score = run.priority × 3600
@@ -46,6 +59,20 @@ outrank newly arriving higher-priority runs. Equal scores use the earlier
 `scheduled_at` first, then stable run and worker IDs. The database makes the
 final fit and assignment decision under row locks, so concurrent scheduler
 attempts cannot reserve the same run twice or overbook a worker.
+
+The worker runs at most `WORKER_CONCURRENCY` handlers at once (default 4). A
+buffered execution-slot channel bounds the local goroutines that may lease work.
+The worker also tracks CPU, host memory, GPU count, and GPU memory used by its
+currently executing handlers and checks local capacity before starting another.
+`WORKER_CONCURRENCY=0` intentionally starts lease cleanup without registering
+or leasing work; negative values are rejected. PostgreSQL reservations remain the
+shared source of truth across worker processes: local admission is a second
+guard within one process, not another database reservation.
+
+`AssignRun` locks the worker row before it reads active reservations and writes
+the new assignment. That serializes competing scheduler transactions for the
+same worker. For example, if two 12GB jobs race for a 16GB worker, only one can
+reserve memory; the other remains scheduled until capacity is released.
 
 For example, an embedding job can request `required_cpu_millis: 2000`,
 `required_memory_mb: 4096`, and no GPU. An inference job can request

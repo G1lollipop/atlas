@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/G1lollipop/atlas/internal/model"
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
 func TestSchedulingScoreIncludesPriorityAndUnboundedAge(t *testing.T) {
@@ -66,6 +67,133 @@ func TestBestAssignmentUsesFIFOAndStableIDsOnTies(t *testing.T) {
 	if !ok || chosen.runID != "z-run" {
 		t.Fatalf("FIFO assignment = %+v, %v; want older z-run", chosen, ok)
 	}
+}
+
+func TestSchedulingPoliciesSelectWorkers(t *testing.T) {
+	now := time.Now()
+	t.Run("first fit sorts worker IDs before selecting", func(t *testing.T) {
+		candidate := &model.RunCandidate{Run: &model.JobRun{ID: "run"}, Job: &model.Job{RequiredCPUMillis: 100}}
+		workers := []*model.Worker{
+			testWorker("z-worker", now, 1000, 1000, 0, 0),
+			testWorker("a-worker", now, 1000, 1000, 0, 0),
+		}
+		got, err := (FirstFit{}).SelectWorker(candidate, workers, now)
+		if err != nil || got == nil || got.ID != "a-worker" {
+			t.Fatalf("FirstFit.SelectWorker() = %v, %v; want a-worker", workerID(got), err)
+		}
+	})
+
+	t.Run("least loaded compares normalized requested resources", func(t *testing.T) {
+		candidate := &model.RunCandidate{Run: &model.JobRun{ID: "run"}, Job: &model.Job{RequiredCPUMillis: 50, RequiredMemoryMB: 50}}
+		heavy := testWorker("a-heavy", now, 1000, 1000, 0, 0)
+		heavy.AvailableCPUMillis, heavy.AvailableMemoryMB = 100, 100
+		light := testWorker("z-light", now, 4000, 4000, 0, 0)
+		light.AvailableCPUMillis, light.AvailableMemoryMB = 3000, 3000
+		got, err := (LeastLoaded{}).SelectWorker(candidate, []*model.Worker{heavy, light}, now)
+		if err != nil || got == nil || got.ID != "z-light" {
+			t.Fatalf("LeastLoaded.SelectWorker() = %v, %v; want z-light", workerID(got), err)
+		}
+	})
+
+	t.Run("best fit leaves the least normalized slack", func(t *testing.T) {
+		candidate := &model.RunCandidate{Run: &model.JobRun{ID: "run"}, Job: &model.Job{RequiredCPUMillis: 100}}
+		tight := testWorker("a-tight", now, 1000, 1000, 0, 0)
+		tight.AvailableCPUMillis = 200
+		roomy := testWorker("z-roomy", now, 4000, 1000, 0, 0)
+		roomy.AvailableCPUMillis = 3000
+		got, err := (BestFit{}).SelectWorker(candidate, []*model.Worker{roomy, tight}, now)
+		if err != nil || got == nil || got.ID != "a-tight" {
+			t.Fatalf("BestFit.SelectWorker() = %v, %v; want a-tight", workerID(got), err)
+		}
+	})
+
+	t.Run("priority aware preserves GPU fragmentation placement", func(t *testing.T) {
+		candidate := &model.RunCandidate{
+			Run: &model.JobRun{ID: "run", Priority: 2, ScheduledAt: now.Add(-time.Minute)},
+			Job: &model.Job{RequiredGPUCount: 1, RequiredGPUMemoryMB: 4096},
+		}
+		small := testWorker("small", now, 2000, 8192, 1, 8192)
+		large := testWorker("large", now, 2000, 8192, 1, 49152)
+		got, err := (PriorityAware{}).SelectWorker(candidate, []*model.Worker{large, small}, now)
+		if err != nil || got == nil || got.ID != "small" {
+			t.Fatalf("PriorityAware.SelectWorker() = %v, %v; want small", workerID(got), err)
+		}
+	})
+}
+
+func TestSchedulingPolicyParser(t *testing.T) {
+	for _, name := range []string{"", "priority-aware", "first-fit", "least-loaded", "best-fit"} {
+		if policy, err := ParseSchedulingPolicy(name); err != nil || policy == nil {
+			t.Errorf("ParseSchedulingPolicy(%q) = %T, %v; want a policy", name, policy, err)
+		}
+	}
+	if _, err := ParseSchedulingPolicy("round-robin"); err == nil {
+		t.Fatal("ParseSchedulingPolicy(round-robin) succeeded; want a clear invalid-name error")
+	}
+}
+
+func TestDispatcherUsesSelectedPolicyAndRetriesAnotherWorker(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	fs := newFakeStore()
+	job := &model.Job{ID: "gpu-job", RequiredGPUCount: 1, RequiredGPUMemoryMB: 4096}
+	fs.addJob(job)
+	fs.runs = append(fs.runs, &model.JobRun{
+		ID: "gpu-run", JobID: job.ID, Status: model.RunStatusScheduled, Priority: 1,
+		ScheduledAt: now.Add(-time.Minute),
+	})
+	_ = fs.UpsertWorkerHeartbeat(ctx, model.Worker{
+		ID: "small", Status: model.WorkerStatusAlive, LastHeartbeatAt: now,
+		CPUCapacity: 2000, MemoryCapacityMB: 8192, GPUCount: 1, GPUMemoryMB: 8192,
+	})
+	_ = fs.UpsertWorkerHeartbeat(ctx, model.Worker{
+		ID: "large", Status: model.WorkerStatusAlive, LastHeartbeatAt: now,
+		CPUCapacity: 2000, MemoryCapacityMB: 8192, GPUCount: 1, GPUMemoryMB: 49152,
+	})
+
+	storeWithRace := &rejectAssignmentOnceStore{
+		Store:  fs,
+		reject: assignmentPair{runID: "gpu-run", workerID: "small"},
+	}
+	dispatcher := NewDispatcherWithPolicy(storeWithRace, testLogger(), BestFit{})
+	dispatcher.Now = func() time.Time { return now }
+	assigned, err := dispatcher.assignScheduledRuns(ctx)
+	if err != nil {
+		t.Fatalf("assignScheduledRuns() error = %v", err)
+	}
+	if assigned != 1 {
+		t.Fatalf("assigned %d runs, want retry on the second feasible worker", assigned)
+	}
+	if !storeWithRace.used {
+		t.Fatal("dispatcher did not make the BestFit-selected small-worker assignment before retrying")
+	}
+	fs.mu.Lock()
+	run := fs.runs[0]
+	fs.mu.Unlock()
+	if run.Status != model.RunStatusAssigned || run.AssignedWorkerID == nil || *run.AssignedWorkerID != "large" {
+		t.Fatalf("run assigned to %v, want large after small worker's atomic reservation was rejected", run.AssignedWorkerID)
+	}
+}
+
+type rejectAssignmentOnceStore struct {
+	store.Store
+	reject assignmentPair
+	used   bool
+}
+
+func (s *rejectAssignmentOnceStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error) {
+	if !s.used && (assignmentPair{runID: runID, workerID: workerID}) == s.reject {
+		s.used = true
+		return false, nil
+	}
+	return s.Store.AssignRun(ctx, runID, workerID, assignmentTTL, heartbeatTTL)
+}
+
+func workerID(worker *model.Worker) string {
+	if worker == nil {
+		return "<nil>"
+	}
+	return worker.ID
 }
 
 func TestWorkerCanRunChecksHeartbeatAndPerGPUVRAM(t *testing.T) {

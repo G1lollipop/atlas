@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,6 +39,9 @@ func main() {
 		log.Error(msg, "error", err)
 		stop()
 		os.Exit(1)
+	}
+	if cfg.Concurrency < 0 {
+		fatal("invalid worker concurrency", fmt.Errorf("WORKER_CONCURRENCY must be zero or greater, got %d", cfg.Concurrency))
 	}
 
 	shutdownTracing, err := tracing.Init(ctx, "worker", cfg.OTLPEndpoint)

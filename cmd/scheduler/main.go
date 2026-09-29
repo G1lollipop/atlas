@@ -34,6 +34,11 @@ func main() {
 		log.Error("load config", "error", err)
 		os.Exit(1)
 	}
+	policy, err := scheduler.ParseSchedulingPolicy(os.Getenv("SCHEDULING_POLICY"))
+	if err != nil {
+		log.Error("load scheduling policy", "error", err)
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -64,6 +69,7 @@ func main() {
 
 	elector := lock.NewPostgresElector(st.Pool(), promotionLockKey)
 	promoter := scheduler.NewPromoter(st, elector, log, cfg.PollInterval)
+	promoter.Policy = policy
 
 	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: metrics.Handler()}
 	go func() {
@@ -71,7 +77,7 @@ func main() {
 		_ = metricsServer.ListenAndServe()
 	}()
 
-	log.Info("scheduler starting", "interval", cfg.PollInterval)
+	log.Info("scheduler starting", "interval", cfg.PollInterval, "policy", scheduler.SchedulingPolicyName(policy))
 	runErr := promoter.Run(ctx)
 	log.Info("scheduler stopped", "reason", runErr)
 
