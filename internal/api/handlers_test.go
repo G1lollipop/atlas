@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,7 @@ func TestCreateJob_Validation(t *testing.T) {
 		{"negative required_memory_mb rejected", map[string]any{"name": "embed", "required_memory_mb": -1}, http.StatusBadRequest},
 		{"negative required_gpu_count rejected", map[string]any{"name": "infer", "required_gpu_count": -1}, http.StatusBadRequest},
 		{"negative required_gpu_memory_mb rejected", map[string]any{"name": "infer", "required_gpu_count": 1, "required_gpu_memory_mb": -1}, http.StatusBadRequest},
+		{"queue name too long", map[string]any{"name": "echo", "queue": strings.Repeat("q", 129)}, http.StatusBadRequest},
 		{"gpu memory requires a gpu", map[string]any{"name": "infer", "required_gpu_memory_mb": 16000}, http.StatusBadRequest},
 		{"accelerator requires a gpu", map[string]any{"name": "infer", "required_accelerator": " nvidia "}, http.StatusBadRequest},
 		{"valid minimal job", map[string]any{"name": "echo"}, http.StatusCreated},
@@ -87,7 +89,9 @@ func TestCreateJob_Validation(t *testing.T) {
 func TestCreateJob_Defaults(t *testing.T) {
 	router, token := newTestRouter(t)
 
-	rec := doRequest(t, router, http.MethodPost, "/v1/jobs", token, map[string]any{"name": "echo"})
+	rec := doRequest(t, router, http.MethodPost, "/v1/jobs", token, map[string]any{
+		"name": "echo", "tenant_id": "body-cannot-set-tenant",
+	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -104,8 +108,31 @@ func TestCreateJob_Defaults(t *testing.T) {
 	if job.WorkloadType != "generic" {
 		t.Errorf("workload_type default = %q, want %q", job.WorkloadType, "generic")
 	}
+	if job.Queue != "cpu-default" {
+		t.Errorf("queue default = %q, want %q", job.Queue, "cpu-default")
+	}
+	if job.TenantID != "handler-test" {
+		t.Errorf("tenant_id = %q, want verified JWT subject %q", job.TenantID, "handler-test")
+	}
 	if job.RequiredCPUMillis != 0 || job.RequiredMemoryMB != 0 || job.RequiredGPUCount != 0 || job.RequiredGPUMemoryMB != 0 || job.RequiredAccelerator != "" {
 		t.Errorf("resource requirements default = cpu:%d memory:%d gpu:%d gpu_memory:%d accelerator:%q, want zero values", job.RequiredCPUMillis, job.RequiredMemoryMB, job.RequiredGPUCount, job.RequiredGPUMemoryMB, job.RequiredAccelerator)
+	}
+}
+
+func TestCreateJob_QueueClassIsPreserved(t *testing.T) {
+	router, token := newTestRouter(t)
+	rec := doRequest(t, router, http.MethodPost, "/v1/jobs", token, map[string]any{
+		"name": "infer", "queue": "  gpu-small  ", "tenant_id": "forged-tenant",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if job.Queue != "gpu-small" || job.TenantID != "handler-test" {
+		t.Fatalf("queue/tenant = %q/%q, want gpu-small/handler-test", job.Queue, job.TenantID)
 	}
 }
 

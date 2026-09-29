@@ -1,19 +1,29 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/G1lollipop/atlas/internal/store"
 )
 
-// jwtAuth is a single shared-secret admin credential, not a multi-tenant identity
-// system: any bearer token signed with jwtSecret grants the same full access to the
-// whole API. That's a deliberate scope boundary for this admin-facing service, not an
-// oversight — per-subject scopes/revocation would replace this middleware wholesale
-// rather than extend it, if atlas ever grew real multi-tenant users.
+type tenantSubjectContextKey struct{}
+
+func tenantSubjectFromContext(ctx context.Context) string {
+	if subject, ok := ctx.Value(tenantSubjectContextKey{}).(string); ok {
+		return store.NormalizeTenant(subject)
+	}
+	return store.DefaultTenant
+}
+
+// jwtAuth still uses a shared-secret credential with broad API access. The verified
+// subject is carried separately for scheduler tenant quotas; it does not grant or
+// restrict authorization to particular jobs.
 func jwtAuth(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +46,18 @@ func jwtAuth(secret string) func(http.Handler) http.Handler {
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			subject, err := token.Claims.GetSubject()
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid token subject")
+				return
+			}
+			subject = store.NormalizeTenant(subject)
+			if err := store.ValidateTenant(subject); err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid token subject")
+				return
+			}
+			ctx := context.WithValue(r.Context(), tenantSubjectContextKey{}, subject)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -11,6 +12,9 @@ func TestJWTAuth(t *testing.T) {
 	const secret = "test-secret"
 
 	passthrough := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := tenantSubjectFromContext(r.Context()); got != "test-subject" {
+			t.Errorf("authenticated tenant subject = %q, want %q", got, "test-subject")
+		}
 		w.WriteHeader(http.StatusTeapot) // distinctive marker: proves next.ServeHTTP ran
 	})
 	handler := jwtAuth(secret)(passthrough)
@@ -27,6 +31,10 @@ func TestJWTAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintToken: %v", err)
 	}
+	oversizedSubjectToken, err := MintToken(secret, strings.Repeat("t", 129), time.Hour)
+	if err != nil {
+		t.Fatalf("MintToken with long subject: %v", err)
+	}
 
 	tests := []struct {
 		name       string
@@ -39,6 +47,7 @@ func TestJWTAuth(t *testing.T) {
 		{"garbage token", "Bearer not-a-real-jwt", http.StatusUnauthorized},
 		{"wrong signing secret", "Bearer " + wrongSecretToken, http.StatusUnauthorized},
 		{"expired token", "Bearer " + expiredToken, http.StatusUnauthorized},
+		{"oversized subject", "Bearer " + oversizedSubjectToken, http.StatusUnauthorized},
 		{"valid token", "Bearer " + validToken, http.StatusTeapot},
 	}
 

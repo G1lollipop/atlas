@@ -70,13 +70,35 @@ func (s *PostgresStore) RetryDeadLetter(ctx context.Context, id string) (*model.
 		return nil, err
 	}
 
+	var jobStatus model.JobStatus
+	var queue, tenant string
+	err = tx.QueryRow(ctx, `
+		SELECT j.status, j.queue, j.tenant_id
+		FROM jobs j JOIN job_runs r ON r.job_id = j.id
+		WHERE r.id = $1
+		FOR UPDATE OF j
+	`, runID).Scan(&jobStatus, &queue, &tenant)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if jobStatus == model.JobStatusCanceled {
+		return nil, ErrJobCanceled
+	}
+	if err := admitQueueWork(ctx, tx, s.queueLimits, queue, tenant, false); err != nil {
+		return nil, err
+	}
+
 	// Fields outside this SET list, including execution_key, retain their stored value.
 	run, err := scanRun(tx.QueryRow(ctx, `
 		UPDATE job_runs
 		SET status = 'queued', attempt = 0, scheduled_at = now(),
-		    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
-		    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL,
-		    started_at = NULL, finished_at = NULL, result = NULL, error = NULL
+	    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
+	    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL,
+	    started_at = NULL, finished_at = NULL, result = NULL, error = NULL,
+	    cancel_requested_at = NULL
 		WHERE id = $1 AND status = 'dead'
 		RETURNING `+runColumns, runID))
 	if err != nil {

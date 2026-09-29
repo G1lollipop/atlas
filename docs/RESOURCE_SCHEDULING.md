@@ -141,3 +141,35 @@ to `0.2s` of jitter following the first failure. The next delay starts at
 `2s` plus up to `0.4s`; later exponential delays stop growing at `5m`, then
 receive up to `1m` of jitter. The worker's optional attempt ceiling can only
 reduce the maximum declared by a job.
+
+## Queues, admission, and cancellation
+
+Jobs carry a free-form `queue` workload class and a `tenant_id` derived from the
+verified JWT subject on API submission. Queue names group backlog for quotas;
+worker placement still checks the job's resource requirements against live
+worker capability. `workload_type` is descriptive and does not choose a worker
+or queue automatically. This is quota accounting for an admin API, not
+multi-tenant authorization: a valid admin token can still inspect any job.
+
+Admission has three independently configurable ceilings:
+`MAX_QUEUE_DEPTH` (default 10000), `PER_QUEUE_LIMIT` (2500), and
+`PER_TENANT_LIMIT` (1000). Zero disables that particular ceiling. The backlog
+counts active queued, scheduled, assigned, leased, and running runs, plus
+accepted one-shot jobs that have not yet been promoted to a run. A terminal
+run releases its slot. Recurring job definitions use capacity when each due
+run is created, rather than holding a permanent slot between executions.
+Submission, due-run creation, and manual dead-letter retry all check capacity
+under the same PostgreSQL transaction-scoped advisory lock before adding work.
+All API and scheduler replicas must use the same configured limits. An API
+request that exceeds a limit returns `429`; a recurring due run waits for a
+later scheduler pass when capacity is full.
+
+`POST /v1/jobs/{id}/cancel` makes the job terminal and prevents future
+promotion. Unstarted runs move straight to `canceled` and release assignments.
+For a leased or running run, the database records a durable cancellation
+request; the worker checks it during lease renewal, cancels the handler
+context, then acknowledges the run as canceled. Completion and retry writes
+are fenced against that request. If the worker dies first, lease expiry lets
+the janitor finalize cancellation. A handler must honor context cancellation
+to stop its own external work promptly; arbitrary code that ignores context
+cannot be forcibly stopped by Go.

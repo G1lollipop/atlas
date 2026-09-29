@@ -104,6 +104,17 @@ func (p *Promoter) PromoteOnce(ctx context.Context) (int, error) {
 		}
 
 		if _, err := p.Store.CreateRun(ctx, job.ID, job.Priority, now); err != nil {
+			if errors.Is(err, store.ErrRunAlreadyExists) {
+				continue
+			}
+			if errors.Is(err, store.ErrQueueCapacityExceeded) {
+				var capacityErr *store.QueueCapacityError
+				p.Logger.Warn("job promotion deferred by queue backpressure", "job_id", job.ID, "error", err)
+				if errors.As(err, &capacityErr) && capacityErr.Dimension == "global backlog" {
+					break
+				}
+				continue
+			}
 			p.Logger.Error("create run failed", "job_id", job.ID, "error", err)
 			continue
 		}

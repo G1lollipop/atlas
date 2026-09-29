@@ -19,6 +19,23 @@ var ErrNotFound = errors.New("store: not found")
 // already exists for a different job.
 var ErrIdempotencyConflict = errors.New("store: idempotency key already used")
 
+// ErrCanceled is returned when a lifecycle write observes a durable cancellation
+// request and records the run as canceled instead of completing or retrying it.
+var ErrCanceled = errors.New("store: run canceled")
+
+// ErrJobCanceled is returned when an attempt is made to pause or resume a job
+// after cancellation, which is a terminal job state.
+var ErrJobCanceled = errors.New("store: job canceled")
+
+// ErrJobArchived is returned when a caller attempts to resume an archived job.
+// Archived jobs cannot be reactivated because that would bypass admission control
+// for accepted one-shot work.
+var ErrJobArchived = errors.New("store: job archived")
+
+// ErrRunAlreadyExists means a one-shot job has already been materialized or a
+// prior promotion created active work while this caller was waiting for its row lock.
+var ErrRunAlreadyExists = errors.New("store: job run already exists")
+
 type Store interface {
 	// --- Jobs ---
 	CreateJob(ctx context.Context, in model.NewJobInput) (*model.Job, error)
@@ -29,6 +46,9 @@ type Store interface {
 	GetJobByIdempotencyKey(ctx context.Context, key string) (*model.Job, error)
 	ListJobs(ctx context.Context, status *model.JobStatus, limit, offset int) ([]*model.Job, error)
 	UpdateJobStatus(ctx context.Context, id string, status model.JobStatus) error
+	// CancelJob atomically marks the job canceled, cancels runs that have not started,
+	// and requests cancellation for leased/running attempts.
+	CancelJob(ctx context.Context, id string) error
 	ListDependencies(ctx context.Context, jobID string) ([]string, error)
 
 	// --- Runs: scheduling / promotion ---
@@ -63,6 +83,11 @@ type Store interface {
 	// Lifecycle writes are scoped to the worker that owns the live lease, preventing
 	// an expired/reclaimed execution from changing a later attempt's state.
 	MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error
+	// CancellationRequested returns true when the current lease owner has a durable
+	// cancellation request. It is polled while a handler is running.
+	CancellationRequested(ctx context.Context, runID, workerID string, attempt int16) (bool, error)
+	// MarkCanceled acknowledges cancellation for the current leased attempt.
+	MarkCanceled(ctx context.Context, runID, workerID string, attempt int16) error
 	CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error
 	// FailRun records an error. If requeue is true the run goes back to queued at
 	// now+backoff; its attempt increments when a worker next leases it. Otherwise

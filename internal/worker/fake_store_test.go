@@ -16,24 +16,27 @@ import (
 type fakeStore struct {
 	mu sync.Mutex
 
-	markRunningCalls     []string
-	markRunningWorkerIDs []string
-	markRunningAttempts  []int16
-	completeRunCalls     []completeRunCall
-	failRunCalls         []failRunCall
-	markDeadCalls        []markDeadCall
-	heartbeatCalls       []model.Worker
-	extendLeaseCalls     []extendLeaseCall
-	operationOrder       []string
-	upsertErrors         []error
-	leaseNotify          chan struct{}
-	leaseCandidates      []leaseCandidate
-	leaseWorkerIDs       []string
-	markRunningErr       error
-	failRunErr           error
-	completeRunErr       error
-	fenceAttempts        bool
-	currentAttempt       int16
+	markRunningCalls      []string
+	markRunningWorkerIDs  []string
+	markRunningAttempts   []int16
+	completeRunCalls      []completeRunCall
+	failRunCalls          []failRunCall
+	markDeadCalls         []markDeadCall
+	markCanceledCalls     []string
+	heartbeatCalls        []model.Worker
+	extendLeaseCalls      []extendLeaseCall
+	operationOrder        []string
+	upsertErrors          []error
+	leaseNotify           chan struct{}
+	cancelObserved        chan struct{}
+	leaseCandidates       []leaseCandidate
+	leaseWorkerIDs        []string
+	markRunningErr        error
+	failRunErr            error
+	completeRunErr        error
+	fenceAttempts         bool
+	currentAttempt        int16
+	cancellationRequested bool
 }
 
 type completeRunCall struct {
@@ -81,6 +84,7 @@ func (f *fakeStore) ListJobs(ctx context.Context, status *model.JobStatus, limit
 func (f *fakeStore) UpdateJobStatus(ctx context.Context, id string, status model.JobStatus) error {
 	return nil
 }
+func (f *fakeStore) CancelJob(ctx context.Context, id string) error { return nil }
 func (f *fakeStore) ListDependencies(ctx context.Context, jobID string) ([]string, error) {
 	return nil, nil
 }
@@ -173,6 +177,25 @@ func (f *fakeStore) MarkRunning(ctx context.Context, runID, workerID string, att
 		return store.ErrNotFound
 	}
 	return f.markRunningErr
+}
+
+func (f *fakeStore) CancellationRequested(ctx context.Context, runID, workerID string, attempt int16) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cancellationRequested && f.cancelObserved != nil {
+		select {
+		case f.cancelObserved <- struct{}{}:
+		default:
+		}
+	}
+	return f.cancellationRequested, nil
+}
+
+func (f *fakeStore) MarkCanceled(ctx context.Context, runID, workerID string, attempt int16) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markCanceledCalls = append(f.markCanceledCalls, runID)
+	return nil
 }
 
 func (f *fakeStore) CompleteRun(ctx context.Context, runID, workerID string, attempt int16, result map[string]any) error {

@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/G1lollipop/atlas/internal/artifact"
 	"github.com/G1lollipop/atlas/internal/config"
 	"github.com/G1lollipop/atlas/internal/logger"
 	"github.com/G1lollipop/atlas/internal/metrics"
@@ -64,6 +66,13 @@ func main() {
 	if err := store.RunMigrations(ctx, st.Pool(), "migrations"); err != nil {
 		fatal("run migrations", err)
 	}
+	objects, maxArtifactBytes, closeArtifacts, err := loadArtifactStoreFromEnv()
+	if err != nil {
+		fatal("configure artifact store", err)
+	}
+	if closeArtifacts != nil {
+		defer func() { _ = closeArtifacts() }()
+	}
 
 	pool := worker.NewPool(st, cfg.WorkerID, cfg.Concurrency, cfg.LeaseDuration, cfg.PollInterval, log)
 	if err := pool.SetRetryPolicy(retryPolicy); err != nil {
@@ -81,6 +90,13 @@ func main() {
 	pool.RegisterHandler("sleep", worker.SleepHandler)
 	pool.RegisterHandler("http_call", worker.HTTPCallHandler)
 	pool.RegisterHandler("idempotent_record", worker.NewIdempotentRecordHandler(st))
+	pool.RegisterHandler("embedding", worker.NewEmbeddingHandler(objects, maxArtifactBytes))
+	pool.RegisterHandler("inference", worker.NewInferenceHandler(objects, maxArtifactBytes))
+	pool.RegisterHandler("batch_transform", worker.NewBatchTransformHandler(objects, maxArtifactBytes))
+	artifactBackend := strings.ToLower(strings.TrimSpace(os.Getenv("ARTIFACT_STORE")))
+	if artifactBackend == "" {
+		artifactBackend = "local"
+	}
 
 	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: metrics.Handler()}
 	go func() {
@@ -94,13 +110,57 @@ func main() {
 		"gpu_count", cfg.WorkerGPUCount,
 		"gpu_type", cfg.WorkerGPUType,
 		"gpu_memory_mb", cfg.WorkerGPUMemoryMB,
-		"labels", cfg.WorkerLabels)
+		"labels", cfg.WorkerLabels,
+		"artifact_store", artifactBackend,
+		"artifact_max_bytes", maxArtifactBytes)
 	runErr := pool.Run(ctx)
 	log.Info("worker stopped", "reason", runErr)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = metricsServer.Shutdown(shutdownCtx)
+}
+
+func loadArtifactStoreFromEnv() (artifact.ArtifactStore, int64, func() error, error) {
+	maxBytes := artifact.DefaultMaxObjectBytes
+	if value := os.Getenv("ARTIFACT_MAX_BYTES"); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 || parsed > 1<<30 {
+			return nil, 0, nil, fmt.Errorf("ARTIFACT_MAX_BYTES must be an integer from 1 through 1073741824")
+		}
+		maxBytes = parsed
+	}
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("ARTIFACT_STORE")))
+	if backend == "" {
+		backend = "local"
+	}
+	switch backend {
+	case "local":
+		root := os.Getenv("ARTIFACT_LOCAL_DIR")
+		if root == "" {
+			root = "./artifacts"
+		}
+		objects, err := artifact.NewLocalArtifactStore(root, maxBytes)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		return objects, maxBytes, objects.Close, nil
+	case "s3":
+		objects, err := artifact.NewS3ArtifactStore(artifact.S3Config{
+			Bucket:       os.Getenv("ARTIFACT_S3_BUCKET"),
+			Region:       os.Getenv("AWS_REGION"),
+			Endpoint:     os.Getenv("ARTIFACT_S3_ENDPOINT"),
+			AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
+			SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			SessionToken: os.Getenv("AWS_SESSION_TOKEN"),
+		}, maxBytes)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		return objects, maxBytes, nil, nil
+	default:
+		return nil, 0, nil, fmt.Errorf("ARTIFACT_STORE must be local or s3, got %q", backend)
+	}
 }
 
 func loadRetryPolicy() (worker.RetryPolicy, error) {

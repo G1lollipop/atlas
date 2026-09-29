@@ -15,13 +15,16 @@ import (
 	"github.com/G1lollipop/atlas/internal/model"
 )
 
-const jobColumns = `id, name, payload, cron_expr, priority, workload_type, required_cpu_millis, required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`
+const jobColumns = `id, name, payload, cron_expr, priority, workload_type, queue, tenant_id, required_cpu_millis, required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`
 
-const runColumns = `id, execution_key, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, assigned_worker_id, assigned_at, assignment_expires_at, started_at, finished_at, result, error, created_at`
+const runColumns = `id, execution_key, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, assigned_worker_id, assigned_at, assignment_expires_at, started_at, finished_at, result, error, cancel_requested_at, created_at`
 
 // PostgresStore is the production store.Store implementation backed by Postgres.
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	// queueLimits are applied transactionally by every path that creates active work.
+	// Set them once at process startup; New installs safe nonzero defaults.
+	queueLimits QueueLimits
 	// replicaPool, if set via EnableReadReplica, is used for pure-read queries
 	// (GetJob, ListJobs, GetRun, ...) so they don't compete with writes and leasing
 	// for primary connections. It is nil unless a read replica is configured -
@@ -59,7 +62,7 @@ func New(ctx context.Context, databaseURL string) (*PostgresStore, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	return &PostgresStore{pool: pool}, nil
+	return &PostgresStore{pool: pool, queueLimits: DefaultQueueLimits()}, nil
 }
 
 func (s *PostgresStore) Close() {
@@ -73,6 +76,16 @@ func (s *PostgresStore) Close() {
 // RunMigrations against the same pool the store uses, rather than opening a second one.
 func (s *PostgresStore) Pool() *pgxpool.Pool {
 	return s.pool
+}
+
+// SetQueueLimits configures the shared backlog quotas enforced by this store. API
+// and scheduler replicas must use the same values; call before serving requests.
+func (s *PostgresStore) SetQueueLimits(limits QueueLimits) error {
+	if err := limits.Validate(); err != nil {
+		return err
+	}
+	s.queueLimits = limits
+	return nil
 }
 
 // EnableReadReplica points all pure-read queries (GetJob, ListJobs, GetRun, ...) at a
@@ -111,7 +124,7 @@ func (s *PostgresStore) readPool() *pgxpool.Pool {
 func scanJobRow(ctx context.Context, q querier, row rowScanner) (*model.Job, error) {
 	var job model.Job
 	var payloadRaw []byte
-	if err := row.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+	if err := row.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 		&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
 		&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
 		&job.CreatedAt, &job.UpdatedAt); err != nil {
@@ -161,7 +174,8 @@ func scanRun(row rowScanner) (*model.JobRun, error) {
 	var resultRaw []byte
 	if err := row.Scan(&run.ID, &run.ExecutionKey, &run.JobID, &run.Status, &run.Attempt, &run.Priority, &run.ScheduledAt,
 		&run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt, &run.AssignedWorkerID, &run.AssignedAt,
-		&run.AssignmentExpiresAt, &run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CreatedAt); err != nil {
+		&run.AssignmentExpiresAt, &run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error,
+		&run.CancelRequestedAt, &run.CreatedAt); err != nil {
 		return nil, err
 	}
 	if resultRaw != nil {
@@ -186,6 +200,14 @@ func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (*m
 	if workloadType == "" {
 		workloadType = "generic"
 	}
+	queue := NormalizeQueue(in.Queue)
+	tenant := NormalizeTenant(in.TenantID)
+	if err := ValidateQueue(queue); err != nil {
+		return nil, err
+	}
+	if err := ValidateTenant(tenant); err != nil {
+		return nil, err
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -193,18 +215,42 @@ func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (*m
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Serialize capacity-bearing submissions with scheduler promotion. Also serialize
+	// idempotency-key checks so a concurrent replay sees the original job before quota
+	// evaluation instead of being rejected for capacity it does not consume.
+	needsAdmissionLock := in.CronExpr == nil || (in.IdempotencyKey != nil && *in.IdempotencyKey != "")
+	if needsAdmissionLock {
+		if err := lockQueueAdmissions(ctx, tx); err != nil {
+			return nil, err
+		}
+		if in.IdempotencyKey != nil && *in.IdempotencyKey != "" {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE idempotency_key = $1)`, *in.IdempotencyKey).Scan(&exists); err != nil {
+				return nil, err
+			}
+			if exists {
+				return nil, ErrIdempotencyConflict
+			}
+		}
+		if in.CronExpr == nil {
+			if err := checkQueueAdmissionCapacity(ctx, tx, s.queueLimits, queue, tenant, false); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	var job model.Job
 	var outRaw []byte
 	row := tx.QueryRow(ctx, `
-		INSERT INTO jobs (name, payload, cron_expr, priority, workload_type, required_cpu_millis,
+		INSERT INTO jobs (name, payload, cron_expr, priority, workload_type, queue, tenant_id, required_cpu_millis,
 			required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator,
 			max_attempts, timeout_seconds, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING `+jobColumns, in.Name, payloadRaw, in.CronExpr, in.Priority, workloadType,
-		in.RequiredCPUMillis, in.RequiredMemoryMB, in.RequiredGPUCount, in.RequiredGPUMemoryMB,
+		queue, tenant, in.RequiredCPUMillis, in.RequiredMemoryMB, in.RequiredGPUCount, in.RequiredGPUMemoryMB,
 		in.RequiredAccelerator, in.MaxAttempts, in.TimeoutSeconds, in.IdempotencyKey)
 
-	if err := row.Scan(&job.ID, &job.Name, &outRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+	if err := row.Scan(&job.ID, &job.Name, &outRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 		&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
 		&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
 		&job.CreatedAt, &job.UpdatedAt); err != nil {
@@ -274,7 +320,7 @@ func (s *PostgresStore) ListJobs(ctx context.Context, status *model.JobStatus, l
 	for rows.Next() {
 		var job model.Job
 		var payloadRaw []byte
-		if err := rows.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+		if err := rows.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
 			&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
 			&job.CreatedAt, &job.UpdatedAt); err != nil {
@@ -300,11 +346,30 @@ func (s *PostgresStore) ListJobs(ctx context.Context, status *model.JobStatus, l
 }
 
 func (s *PostgresStore) UpdateJobStatus(ctx context.Context, id string, status model.JobStatus) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET status = $1, updated_at = now() WHERE id = $2`, status, id)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE jobs
+		SET status = $1, updated_at = now()
+		WHERE id = $2
+		  AND status <> 'canceled'
+		  AND NOT (status = 'archived' AND $1 <> 'archived')
+	`, status, id)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		var current model.JobStatus
+		if err := s.pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, id).Scan(&current); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if current == model.JobStatusCanceled {
+			return ErrJobCanceled
+		}
+		if current == model.JobStatusArchived && status != model.JobStatusArchived {
+			return ErrJobArchived
+		}
 		return ErrNotFound
 	}
 	return nil
@@ -336,11 +401,57 @@ func (s *PostgresStore) HasActiveRun(ctx context.Context, jobID string) (bool, e
 }
 
 func (s *PostgresStore) CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (*model.JobRun, error) {
-	row := s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status model.JobStatus
+	var cronExpr *string
+	var queue, tenant string
+	err = tx.QueryRow(ctx, `SELECT status, cron_expr, queue, tenant_id FROM jobs WHERE id = $1 FOR UPDATE`, jobID).
+		Scan(&status, &cronExpr, &queue, &tenant)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if status != model.JobStatusActive {
+		return nil, ErrNotFound
+	}
+	var hasPriorRun bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = $1)`, jobID).Scan(&hasPriorRun); err != nil {
+		return nil, err
+	}
+	var hasActiveRun bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = $1
+			AND status IN ('queued', 'scheduled', 'assigned', 'leased', 'running'))
+	`, jobID).Scan(&hasActiveRun); err != nil {
+		return nil, err
+	}
+	if hasActiveRun || (cronExpr == nil && hasPriorRun) {
+		return nil, ErrRunAlreadyExists
+	}
+	reservationHeld := cronExpr == nil && !hasPriorRun
+	if err := admitQueueWork(ctx, tx, s.queueLimits, queue, tenant, reservationHeld); err != nil {
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO job_runs (job_id, status, priority, scheduled_at)
 		VALUES ($1, 'queued', $2, $3)
 		RETURNING `+runColumns, jobID, priority, scheduledAt)
-	return scanRun(row)
+	run, err := scanRun(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return run, nil
 }
 
 func (s *PostgresStore) ScheduleDueRuns(ctx context.Context) (int, error) {
@@ -378,9 +489,9 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.id, r.execution_key, r.job_id, r.status, r.attempt, r.priority, r.scheduled_at,
 		       r.leased_by, r.leased_at, r.lease_expires_at, r.assigned_worker_id,
-		       r.assigned_at, r.assignment_expires_at, r.started_at, r.finished_at,
-		       r.result, r.error, r.created_at,
-		       j.id, j.name, j.payload, j.cron_expr, j.priority, j.workload_type,
+	       r.assigned_at, r.assignment_expires_at, r.started_at, r.finished_at,
+		       r.result, r.error, r.cancel_requested_at, r.created_at,
+		       j.id, j.name, j.payload, j.cron_expr, j.priority, j.workload_type, j.queue, j.tenant_id,
 		       j.required_cpu_millis, j.required_memory_mb, j.required_gpu_count,
 		       j.required_gpu_memory_mb, j.required_accelerator, j.max_attempts,
 		       j.timeout_seconds, j.status, j.idempotency_key, j.created_at, j.updated_at
@@ -404,8 +515,8 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 		if err := rows.Scan(&run.ID, &run.ExecutionKey, &run.JobID, &run.Status, &run.Attempt, &run.Priority,
 			&run.ScheduledAt, &run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt,
 			&run.AssignedWorkerID, &run.AssignedAt, &run.AssignmentExpiresAt,
-			&run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CreatedAt,
-			&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType,
+			&run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CancelRequestedAt, &run.CreatedAt,
+			&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount,
 			&job.RequiredGPUMemoryMB, &job.RequiredAccelerator, &job.MaxAttempts,
 			&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.CreatedAt, &job.UpdatedAt); err != nil {
@@ -653,11 +764,17 @@ func (s *PostgresStore) MarkRunning(ctx context.Context, runID, workerID string,
 		UPDATE job_runs SET status = 'running', started_at = now()
 		WHERE id = $1 AND leased_by = $2 AND attempt = $3
 		  AND status = 'leased' AND lease_expires_at > now()
+		  AND cancel_requested_at IS NULL
 	`, runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		if err := s.MarkCanceled(ctx, runID, workerID, attempt); err == nil {
+			return ErrCanceled
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
 		return ErrNotFound
 	}
 	return nil
@@ -674,11 +791,17 @@ func (s *PostgresStore) CompleteRun(ctx context.Context, runID, workerID string,
 		    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
 		WHERE id = $2 AND leased_by = $3 AND attempt = $4
 		  AND status = 'running' AND lease_expires_at > now()
+		  AND cancel_requested_at IS NULL
 	`, raw, runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		if err := s.MarkCanceled(ctx, runID, workerID, attempt); err == nil {
+			return ErrCanceled
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
 		return ErrNotFound
 	}
 	return nil
@@ -695,6 +818,8 @@ func (s *PostgresStore) FailRun(ctx context.Context, runID, workerID string, att
 			    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL
 			WHERE id = $3 AND leased_by = $4 AND attempt = $5
 			  AND status IN ('leased', 'running') AND lease_expires_at > now()
+			  AND cancel_requested_at IS NULL
+			  AND EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_runs.job_id AND jobs.status <> 'canceled')
 		`, durationMilliseconds(backoff), errMsg, runID, workerID, attempt)
 	} else {
 		tag, err = s.pool.Exec(ctx, `
@@ -703,12 +828,19 @@ func (s *PostgresStore) FailRun(ctx context.Context, runID, workerID string, att
 			    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
 			WHERE id = $2 AND leased_by = $3 AND attempt = $4
 			  AND status IN ('leased', 'running') AND lease_expires_at > now()
+			  AND cancel_requested_at IS NULL
+			  AND EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_runs.job_id AND jobs.status <> 'canceled')
 		`, errMsg, runID, workerID, attempt)
 	}
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		if err := s.MarkCanceled(ctx, runID, workerID, attempt); err == nil {
+			return ErrCanceled
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
 		return ErrNotFound
 	}
 	return nil
@@ -757,7 +889,9 @@ func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason strin
 func (s *PostgresStore) ReclaimExpiredLeases(ctx context.Context) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE job_runs
-		SET status = 'queued', leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
+		SET status = CASE WHEN cancel_requested_at IS NULL THEN 'queued' ELSE 'canceled' END,
+		    finished_at = CASE WHEN cancel_requested_at IS NULL THEN finished_at ELSE COALESCE(finished_at, now()) END,
+		    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
 		    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL
 		WHERE status IN ('leased', 'running') AND lease_expires_at < now()
 		RETURNING id

@@ -25,6 +25,8 @@ import (
 
 var tracer = otel.Tracer("atlas/worker")
 
+var errCancellationRequested = errors.New("durable run cancellation requested")
+
 type Pool struct {
 	Store         store.Store
 	WorkerID      string
@@ -334,6 +336,10 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	defer releaseResources()
 
 	if err := p.Store.MarkRunning(ctx, run.ID, p.WorkerID, run.Attempt); err != nil {
+		if errors.Is(err, store.ErrCanceled) {
+			p.recordCanceled(run)
+			return
+		}
 		p.Logger.Error("mark running failed", "run_id", run.ID, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "mark running failed")
@@ -349,6 +355,13 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	result, err := h(runCtx, job, run)
 	leaseErr := stopLeaseRenewal()
 	metrics.RunDuration.Observe(time.Since(start).Seconds())
+	if errors.Is(leaseErr, errCancellationRequested) {
+		if cerr := p.Store.MarkCanceled(ctx, run.ID, p.WorkerID, run.Attempt); cerr != nil && !errors.Is(cerr, store.ErrNotFound) {
+			p.Logger.Error("acknowledge run cancellation failed", "run_id", run.ID, "error", cerr)
+		}
+		p.recordCanceled(run)
+		return
+	}
 	if leaseErr != nil {
 		// A failed renewal makes ownership uncertain. The janitor is responsible
 		// for recovery; do not write a completion or failure transition for a
@@ -368,6 +381,10 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 
 	if err == nil {
 		if cerr := p.Store.CompleteRun(ctx, run.ID, p.WorkerID, run.Attempt, result); cerr != nil {
+			if errors.Is(cerr, store.ErrCanceled) {
+				p.recordCanceled(run)
+				return
+			}
 			p.Logger.Error("complete run failed", "run_id", run.ID, "error", cerr)
 			span.RecordError(cerr)
 			span.SetStatus(codes.Error, "complete run failed")
@@ -391,6 +408,10 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 			backoff = 0
 		}
 		if ferr := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, err.Error(), true, backoff); ferr != nil {
+			if errors.Is(ferr, store.ErrCanceled) {
+				p.recordCanceled(run)
+				return
+			}
 			p.Logger.Error("fail run failed", "run_id", run.ID, "error", ferr)
 			return
 		}
@@ -403,6 +424,10 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	}
 
 	if ferr := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, err.Error(), false, 0); ferr != nil {
+		if errors.Is(ferr, store.ErrCanceled) {
+			p.recordCanceled(run)
+			return
+		}
 		p.Logger.Error("fail run failed", "run_id", run.ID, "error", ferr)
 		return
 	}
@@ -415,6 +440,11 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	p.Logger.Error("job run dead: max attempts exceeded",
 		"run_id", run.ID, "job_id", job.ID, "job_name", job.Name,
 		"attempt", run.Attempt, "max_attempts", maxAttempts, "error", err)
+}
+
+func (p *Pool) recordCanceled(run *model.JobRun) {
+	metrics.RunsCompleted.WithLabelValues("canceled").Inc()
+	p.Logger.Info("job run canceled", "run_id", run.ID)
 }
 
 func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, job *model.Job, admissionErr error, span trace.Span) {
@@ -430,6 +460,10 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 			backoff = 0
 		}
 		if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, true, backoff); err != nil {
+			if errors.Is(err, store.ErrCanceled) {
+				p.recordCanceled(run)
+				return
+			}
 			p.Logger.Error("requeue run after resource admission rejection failed",
 				"run_id", run.ID, "admission_error", admissionErr, "error", err)
 			return
@@ -442,6 +476,10 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 	}
 
 	if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, false, 0); err != nil {
+		if errors.Is(err, store.ErrCanceled) {
+			p.recordCanceled(run)
+			return
+		}
 		p.Logger.Error("fail run after resource admission rejection failed",
 			"run_id", run.ID, "admission_error", admissionErr, "error", err)
 		return
@@ -460,12 +498,9 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 // A failed renewal cancels the handler and stops renewal. The returned function
 // joins the goroutine before executeOne performs its final lifecycle transition.
 func (p *Pool) startLeaseRenewal(ctx context.Context, cancelHandler context.CancelFunc, runID string, attempt int16) func() error {
-	if p.LeaseDuration <= 0 {
-		return func() error { return nil }
-	}
 	interval := p.LeaseDuration / 3
 	if interval <= 0 {
-		interval = p.LeaseDuration
+		interval = time.Second
 	}
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -483,7 +518,18 @@ func (p *Pool) startLeaseRenewal(ctx context.Context, cancelHandler context.Canc
 			case <-stop:
 				return
 			case <-ticker.C:
-				if err := p.Store.ExtendLease(ctx, runID, p.WorkerID, attempt, p.LeaseDuration); err != nil {
+				requested, err := p.Store.CancellationRequested(ctx, runID, p.WorkerID, attempt)
+				if err == nil && requested {
+					errMu.Lock()
+					renewalErr = errCancellationRequested
+					errMu.Unlock()
+					cancelHandler()
+					return
+				}
+				if err == nil && p.LeaseDuration > 0 {
+					err = p.Store.ExtendLease(ctx, runID, p.WorkerID, attempt, p.LeaseDuration)
+				}
+				if err != nil {
 					// Handler timeout or shutdown cancels the renewal request too.
 					// Let executeOne handle that cancellation as a normal run
 					// failure; only a live context's renewal error means the

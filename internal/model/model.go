@@ -11,6 +11,7 @@ const (
 	JobStatusActive   JobStatus = "active"
 	JobStatusPaused   JobStatus = "paused"
 	JobStatusArchived JobStatus = "archived"
+	JobStatusCanceled JobStatus = "canceled"
 )
 
 type RunStatus string
@@ -24,6 +25,7 @@ const (
 	RunStatusSucceeded RunStatus = "succeeded"
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusDead      RunStatus = "dead"
+	RunStatusCanceled  RunStatus = "canceled"
 )
 
 // Job is a job definition: either a one-shot task or a recurring (cron_expr set) template.
@@ -35,6 +37,8 @@ type Job struct {
 	CronExpr            *string        `json:"cron_expr,omitempty"`
 	Priority            int16          `json:"priority"`
 	WorkloadType        string         `json:"workload_type"`
+	Queue               string         `json:"queue"`
+	TenantID            string         `json:"tenant_id"`
 	RequiredCPUMillis   int32          `json:"required_cpu_millis"`
 	RequiredMemoryMB    int32          `json:"required_memory_mb"`
 	RequiredGPUCount    int32          `json:"required_gpu_count"`
@@ -70,6 +74,7 @@ type JobRun struct {
 	FinishedAt          *time.Time     `json:"finished_at,omitempty"`
 	Result              map[string]any `json:"result,omitempty"`
 	Error               *string        `json:"error,omitempty"`
+	CancelRequestedAt   *time.Time     `json:"cancel_requested_at,omitempty"`
 	CreatedAt           time.Time      `json:"created_at"`
 }
 
@@ -126,6 +131,8 @@ type NewJobInput struct {
 	CronExpr            *string        `json:"cron_expr,omitempty"`
 	Priority            int16          `json:"priority"`
 	WorkloadType        string         `json:"workload_type,omitempty"`
+	Queue               string         `json:"queue,omitempty"`
+	TenantID            string         `json:"-"` // Set from the verified JWT subject, never from the request body.
 	RequiredCPUMillis   int32          `json:"required_cpu_millis,omitempty"`
 	RequiredMemoryMB    int32          `json:"required_memory_mb,omitempty"`
 	RequiredGPUCount    int32          `json:"required_gpu_count,omitempty"`

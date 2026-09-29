@@ -30,6 +30,14 @@ func (h *handler) listDeadLetters(w http.ResponseWriter, r *http.Request) {
 func (h *handler) retryDeadLetter(w http.ResponseWriter, r *http.Request) {
 	run, err := h.store.RetryDeadLetter(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
+		if errors.Is(err, store.ErrJobCanceled) {
+			writeError(w, http.StatusConflict, "cannot retry a dead letter for a canceled job")
+			return
+		}
+		if errors.Is(err, store.ErrQueueCapacityExceeded) {
+			writeError(w, http.StatusTooManyRequests, "queue capacity exceeded")
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "dead letter not found")
 			return

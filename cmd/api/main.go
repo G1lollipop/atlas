@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/G1lollipop/atlas/internal/api"
@@ -57,6 +58,11 @@ func main() {
 	if err != nil {
 		fatal("connect to database", err)
 	}
+	if err := pgStore.SetQueueLimits(store.QueueLimits{
+		MaxQueueDepth: cfg.MaxQueueDepth, PerQueueLimit: cfg.PerQueueLimit, PerTenantLimit: cfg.PerTenantLimit,
+	}); err != nil {
+		fatal("configure queue backpressure", err)
+	}
 
 	if err := store.RunMigrations(ctx, pgStore.Pool(), "migrations"); err != nil {
 		fatal("run migrations", err)
@@ -80,7 +86,24 @@ func main() {
 	}
 	defer svc.Close()
 
-	router := api.NewRouter(svc, log, cfg.JWTSecret, cfg.RateLimitRPS, cfg.RateLimitBurst)
+	// A configured Redis endpoint is also the shared quota store, so every API
+	// replica enforces the same per-client-IP token bucket. Fail at startup when
+	// Redis is configured but unavailable; requests never fall back to local quotas.
+	var requestLimiter api.RateLimiter
+	if cfg.RedisAddr != "" {
+		rateLimitRedis := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+		defer rateLimitRedis.Close()
+		if err := rateLimitRedis.Ping(ctx).Err(); err != nil {
+			fatal("connect to Redis rate limiter", err)
+		}
+		requestLimiter, err = api.NewRedisRateLimiter(rateLimitRedis, cfg.RateLimitRPS, cfg.RateLimitBurst)
+		if err != nil {
+			fatal("configure Redis rate limiter", err)
+		}
+		log.Info("distributed API rate limit enabled", "redis_addr", cfg.RedisAddr)
+	}
+
+	router := api.NewRouter(svc, log, cfg.JWTSecret, cfg.RateLimitRPS, cfg.RateLimitBurst, requestLimiter)
 	tracedRouter := otelhttp.NewHandler(router, "atlas-api")
 
 	apiServer := &http.Server{Addr: cfg.HTTPAddr, Handler: tracedRouter}

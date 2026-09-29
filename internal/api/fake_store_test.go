@@ -50,6 +50,8 @@ func (s *fakeStore) CreateJob(ctx context.Context, in model.NewJobInput) (*model
 		CronExpr:            in.CronExpr,
 		Priority:            in.Priority,
 		WorkloadType:        in.WorkloadType,
+		Queue:               store.NormalizeQueue(in.Queue),
+		TenantID:            store.NormalizeTenant(in.TenantID),
 		RequiredCPUMillis:   in.RequiredCPUMillis,
 		RequiredMemoryMB:    in.RequiredMemoryMB,
 		RequiredGPUCount:    in.RequiredGPUCount,
@@ -106,8 +108,36 @@ func (s *fakeStore) UpdateJobStatus(ctx context.Context, id string, status model
 	if !ok {
 		return store.ErrNotFound
 	}
+	if j.Status == model.JobStatusCanceled {
+		return store.ErrJobCanceled
+	}
 	j.Status = status
 	j.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *fakeStore) CancelJob(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	job.Status = model.JobStatusCanceled
+	job.UpdatedAt = time.Now()
+	requestedAt := time.Now()
+	for _, run := range s.runs[id] {
+		switch run.Status {
+		case model.RunStatusQueued, model.RunStatusScheduled, model.RunStatusAssigned, model.RunStatusFailed:
+			run.Status = model.RunStatusCanceled
+			run.CancelRequestedAt = &requestedAt
+			run.FinishedAt = &requestedAt
+			run.LeasedBy, run.LeasedAt, run.LeaseExpiresAt = nil, nil, nil
+			run.AssignedWorkerID, run.AssignedAt, run.AssignmentExpiresAt = nil, nil, nil
+		case model.RunStatusLeased, model.RunStatusRunning:
+			run.CancelRequestedAt = &requestedAt
+		}
+	}
 	return nil
 }
 
@@ -146,6 +176,14 @@ func (s *fakeStore) ExtendLease(ctx context.Context, runID, workerID string, att
 }
 
 func (s *fakeStore) MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error {
+	return nil
+}
+
+func (s *fakeStore) CancellationRequested(ctx context.Context, runID, workerID string, attempt int16) (bool, error) {
+	return false, nil
+}
+
+func (s *fakeStore) MarkCanceled(ctx context.Context, runID, workerID string, attempt int16) error {
 	return nil
 }
 

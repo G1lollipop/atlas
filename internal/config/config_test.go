@@ -28,6 +28,32 @@ func TestLoadWorkerCapabilityDefaults(t *testing.T) {
 	if len(cfg.WorkerLabels) != 0 {
 		t.Fatalf("default worker labels = %#v, want empty", cfg.WorkerLabels)
 	}
+	if cfg.MaxQueueDepth != 10000 || cfg.PerQueueLimit != 2500 || cfg.PerTenantLimit != 1000 {
+		t.Fatalf("default queue limits = %d/%d/%d, want 10000/2500/1000", cfg.MaxQueueDepth, cfg.PerQueueLimit, cfg.PerTenantLimit)
+	}
+}
+
+func TestLoadQueueLimitsFromEnvironment(t *testing.T) {
+	t.Setenv("MAX_QUEUE_DEPTH", "900")
+	t.Setenv("PER_QUEUE_LIMIT", "300")
+	t.Setenv("PER_TENANT_LIMIT", "75")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxQueueDepth != 900 || cfg.PerQueueLimit != 300 || cfg.PerTenantLimit != 75 {
+		t.Fatalf("queue limits = %d/%d/%d, want 900/300/75", cfg.MaxQueueDepth, cfg.PerQueueLimit, cfg.PerTenantLimit)
+	}
+}
+
+func TestLoadRejectsNegativeQueueLimits(t *testing.T) {
+	t.Setenv("MAX_QUEUE_DEPTH", "10")
+	t.Setenv("PER_QUEUE_LIMIT", "-1")
+	t.Setenv("PER_TENANT_LIMIT", "5")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() succeeded with a negative queue limit")
+	}
 }
 
 func TestLoadWorkerCapabilitiesFromEnvironment(t *testing.T) {
@@ -66,6 +92,29 @@ func TestLoadRejectsInvalidWorkerCapabilities(t *testing.T) {
 			setWorkerEnv(t, tt.cpu, tt.memory, tt.gpuCount, tt.gpuType, tt.gpuMemory, tt.tags)
 			if _, err := Load(); err == nil {
 				t.Fatal("Load() succeeded for invalid worker capabilities")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidRateLimitConfiguration(t *testing.T) {
+	tests := []struct {
+		name  string
+		rps   string
+		burst string
+	}{
+		{name: "zero rate", rps: "0", burst: "40"},
+		{name: "negative rate", rps: "-1", burst: "40"},
+		{name: "non-finite rate", rps: "NaN", burst: "40"},
+		{name: "zero burst", rps: "20", burst: "0"},
+		{name: "negative burst", rps: "20", burst: "-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("RATE_LIMIT_RPS", tt.rps)
+			t.Setenv("RATE_LIMIT_BURST", tt.burst)
+			if _, err := Load(); err == nil {
+				t.Fatal("Load() succeeded for invalid rate-limit configuration")
 			}
 		})
 	}

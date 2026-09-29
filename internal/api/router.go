@@ -14,21 +14,24 @@ import (
 )
 
 // NewRouter wires the full HTTP API. jwtSecret is the shared HS256 secret used to
-// verify Authorization: Bearer tokens on /v1/*; rateRPS/rateBurst configure the
-// per-client-IP token bucket applied to the same routes.
-func NewRouter(st store.Store, log *slog.Logger, jwtSecret string, rateRPS float64, rateBurst int) http.Handler {
+// verify Authorization: Bearer tokens on /v1/*; the optional limiter may enforce
+// quotas across API replicas, while the local token bucket supports tests/dev.
+func NewRouter(st store.Store, log *slog.Logger, jwtSecret string, rateRPS float64, rateBurst int, supplied ...RateLimiter) http.Handler {
 	r := chi.NewRouter()
 
 	r.Get("/healthz", healthzHandler)
 	r.Handle("/metrics", metrics.Handler())
 
 	h := &handler{store: st, log: log}
-	limiter := newRateLimiter(rateRPS, rateBurst)
+	var limiter RateLimiter = newRateLimiter(rateRPS, rateBurst)
+	if len(supplied) > 0 && supplied[0] != nil {
+		limiter = supplied[0]
+	}
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(chimiddleware.Recoverer)
 		r.Use(requestLogger(log))
-		r.Use(limiter.middleware)
+		r.Use(limiter.Middleware)
 		r.Use(jwtAuth(jwtSecret))
 
 		r.Post("/jobs", h.createJob)
@@ -36,6 +39,7 @@ func NewRouter(st store.Store, log *slog.Logger, jwtSecret string, rateRPS float
 		r.Get("/jobs/{id}", h.getJob)
 		r.Post("/jobs/{id}/pause", h.pauseJob)
 		r.Post("/jobs/{id}/resume", h.resumeJob)
+		r.Post("/jobs/{id}/cancel", h.cancelJob)
 		r.Get("/jobs/{id}/runs", h.listJobRuns)
 		r.Get("/runs/{id}", h.getRun)
 		r.Get("/workers", h.listWorkers)

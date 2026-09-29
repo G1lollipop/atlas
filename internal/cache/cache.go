@@ -7,16 +7,13 @@
 // Two different caching strategies are used, matched to how each entity actually
 // changes:
 //
-//   - Job: cached with a short TTL and invalidated on every write (UpdateJobStatus,
-//     CreateJob). A job's status can change at any time (pause/resume), so a
+//   - Job: cached with a short TTL and invalidated on every status write
+//     (UpdateJobStatus and CancelJob). A job's status can change at any time, so a
 //     time-boxed cache with active invalidation is the only safe option — this is the
 //     classic "get this wrong and you serve a paused job as active" bug class.
-//   - JobRun: only cached once it reaches a truly terminal state (succeeded or dead —
-//     NOT "failed", since a failed run with retries left transitions back to queued
-//     and is later scheduled again, while "failed" without retries is followed by
-//     MarkDead within the same worker call, making the window where "failed" is stable
-//     too narrow to trust). A terminal run's fields never change again, so it's cached
-//     with a long TTL and no invalidation is needed at all.
+//   - JobRun: cached only after it reaches succeeded or canceled. Failed runs
+//     can be retried, and dead runs can be manually requeued from the dead-letter
+//     API, so neither is stable enough to cache. A final run has a longer TTL.
 package cache
 
 import (
@@ -99,6 +96,27 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id string, status model.Job
 	return nil
 }
 
+// CancelJob changes both the job and any active runs. A cached job must be
+// invalidated after the underlying transactional cancellation commits.
+func (s *Store) CancelJob(ctx context.Context, id string) error {
+	if err := s.Store.CancelJob(ctx, id); err != nil {
+		return err
+	}
+	_ = s.redis.Del(ctx, jobKeyPrefix+id).Err()
+	return nil
+}
+
+// RetryDeadLetter also clears a terminal run cached by an older API instance.
+// Dead runs are no longer newly cached because operators can requeue them.
+func (s *Store) RetryDeadLetter(ctx context.Context, id string) (*model.JobRun, error) {
+	run, err := s.Store.RetryDeadLetter(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.redis.Del(ctx, runKeyPrefix+run.ID).Err()
+	return run, nil
+}
+
 func (s *Store) GetRun(ctx context.Context, id string) (*model.JobRun, error) {
 	key := runKeyPrefix + id
 
@@ -116,7 +134,7 @@ func (s *Store) GetRun(ctx context.Context, id string) (*model.JobRun, error) {
 		if err != nil {
 			return nil, err
 		}
-		if run.Status == model.RunStatusSucceeded || run.Status == model.RunStatusDead {
+		if run.Status == model.RunStatusSucceeded || run.Status == model.RunStatusCanceled {
 			if raw, jsonErr := json.Marshal(run); jsonErr == nil {
 				s.redis.Set(ctx, key, raw, runTTL)
 			}

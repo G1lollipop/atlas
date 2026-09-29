@@ -58,6 +58,12 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	in.Queue = store.NormalizeQueue(in.Queue)
+	if err := store.ValidateQueue(in.Queue); err != nil {
+		writeError(w, http.StatusBadRequest, "queue must be at most 128 UTF-8 bytes")
+		return
+	}
+	in.TenantID = tenantSubjectFromContext(r.Context())
 	in.WorkloadType = strings.TrimSpace(in.WorkloadType)
 	if in.WorkloadType == "" {
 		in.WorkloadType = "generic"
@@ -126,7 +132,22 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 	job, err := h.store.CreateJob(r.Context(), in)
 	if err != nil {
 		if errors.Is(err, store.ErrIdempotencyConflict) {
+			if in.IdempotencyKey != nil && *in.IdempotencyKey != "" {
+				existing, lookupErr := h.store.GetJobByIdempotencyKey(r.Context(), *in.IdempotencyKey)
+				if lookupErr == nil {
+					writeJSON(w, http.StatusOK, existing)
+					return
+				}
+				if !errors.Is(lookupErr, store.ErrNotFound) {
+					h.serverError(w, lookupErr, "GetJobByIdempotencyKey after conflict failed")
+					return
+				}
+			}
 			writeError(w, http.StatusConflict, "idempotency key already used")
+			return
+		}
+		if errors.Is(err, store.ErrQueueCapacityExceeded) {
+			writeError(w, http.StatusTooManyRequests, "queue capacity exceeded")
 			return
 		}
 		h.serverError(w, err, "CreateJob failed")
@@ -144,7 +165,7 @@ func (h *handler) listJobs(w http.ResponseWriter, r *http.Request) {
 	if s := q.Get("status"); s != "" {
 		st := model.JobStatus(s)
 		switch st {
-		case model.JobStatusActive, model.JobStatusPaused, model.JobStatusArchived:
+		case model.JobStatusActive, model.JobStatusPaused, model.JobStatusArchived, model.JobStatusCanceled:
 			statusPtr = &st
 		default:
 			writeError(w, http.StatusBadRequest, "invalid status")
@@ -194,6 +215,14 @@ func (h *handler) resumeJob(w http.ResponseWriter, r *http.Request) {
 func (h *handler) updateJobStatus(w http.ResponseWriter, r *http.Request, status model.JobStatus) {
 	id := chi.URLParam(r, "id")
 	if err := h.store.UpdateJobStatus(r.Context(), id, status); err != nil {
+		if errors.Is(err, store.ErrJobCanceled) {
+			writeError(w, http.StatusConflict, "job is canceled")
+			return
+		}
+		if errors.Is(err, store.ErrJobArchived) {
+			writeError(w, http.StatusConflict, "archived jobs cannot be resumed")
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "job not found")
 			return

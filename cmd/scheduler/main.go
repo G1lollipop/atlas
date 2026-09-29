@@ -62,6 +62,13 @@ func main() {
 		fatal("connect to database", err)
 	}
 	defer st.Close()
+	// API and scheduler replicas share queue state, so deploy them with identical
+	// MAX_QUEUE_DEPTH/PER_QUEUE_LIMIT/PER_TENANT_LIMIT values.
+	if err := st.SetQueueLimits(store.QueueLimits{
+		MaxQueueDepth: cfg.MaxQueueDepth, PerQueueLimit: cfg.PerQueueLimit, PerTenantLimit: cfg.PerTenantLimit,
+	}); err != nil {
+		fatal("configure queue backpressure", err)
+	}
 
 	if err := store.RunMigrations(ctx, st.Pool(), "migrations"); err != nil {
 		fatal("run migrations", err)

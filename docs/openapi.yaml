@@ -90,6 +90,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
     get:
       operationId: listJobs
       summary: List jobs
@@ -98,7 +100,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [active, paused, archived]
+            enum: [active, paused, archived, canceled]
         - name: limit
           in: query
           description: Default 50, capped at 200
@@ -185,6 +187,18 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: Canceled or archived jobs cannot be paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Canceled or archived jobs cannot be resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -258,6 +272,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /v1/dead-letters:
     get:
@@ -306,6 +322,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A canceled job cannot have a dead letter retried
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/jobs/{id}/cancel:
+    post:
+      operationId: cancelJob
+      summary: Cancel a job and prevent future runs
+      description: >
+        Unstarted runs cancel immediately. A leased or running run receives a
+        durable request that cancels the handler context when the worker polls;
+        the run becomes canceled when acknowledged or its lease expires.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Cancellation accepted; safe to repeat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [canceled]
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -359,6 +412,12 @@ components:
         format: uuid
 
   responses:
+    ServiceUnavailable:
+      description: Configured Redis rate limiter is unavailable; request was not processed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     Unauthorized:
       description: Missing, malformed, invalid, or expired bearer token
       content:
@@ -373,8 +432,8 @@ components:
             $ref: "#/components/schemas/Error"
     RateLimited:
       description: >
-        Per-client-IP token bucket exhausted (default 20 req/s, burst 40 — see
-        RATE_LIMIT_RPS / RATE_LIMIT_BURST)
+        Per-client-IP token bucket exhausted, or (on job creation and dead-letter
+        retry) a configured queue backlog limit is full.
       content:
         application/json:
           schema:
@@ -407,6 +466,10 @@ components:
           format: int16
           default: 0
           description: Higher values receive a larger scheduler score; waiting time can overcome the priority gap.
+        queue:
+          type: string
+          default: cpu-default
+          description: Free-form workload class for backlog quotas; worker placement uses resource requirements.
         workload_type:
           type: string
           default: generic
@@ -475,7 +538,10 @@ components:
               format: uuid
             status:
               type: string
-              enum: [active, paused, archived]
+              enum: [active, paused, archived, canceled]
+            tenant_id:
+              type: string
+              description: Derived from the signed JWT subject, or legacy for direct-store jobs.
             created_at:
               type: string
               format: date-time
@@ -498,7 +564,12 @@ components:
           description: Stable across automatic retries, lease recovery, and manual dead-letter retry.
         status:
           type: string
-          enum: [queued, scheduled, assigned, leased, running, succeeded, failed, dead]
+          enum: [queued, scheduled, assigned, leased, running, succeeded, failed, dead, canceled]
+        cancel_requested_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Durable cancellation request for a leased or running attempt.
         attempt:
           type: integer
           format: int16

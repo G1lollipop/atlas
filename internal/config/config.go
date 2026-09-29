@@ -1,11 +1,13 @@
 // Package config loads process configuration from the environment. All services
 // (api, scheduler, worker) share this loader so deployment (docker-compose/k8s) only
-// has one set of env vars to reason about.
+// has one set of env vars to reason about. MAX_QUEUE_DEPTH, PER_QUEUE_LIMIT, and
+// PER_TENANT_LIMIT must match on every API and scheduler replica sharing a database.
 package config
 
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -29,6 +31,9 @@ type Config struct {
 	MetricsAddr             string
 	RateLimitRPS            float64
 	RateLimitBurst          int
+	MaxQueueDepth           int
+	PerQueueLimit           int
+	PerTenantLimit          int
 	Concurrency             int
 	OTLPEndpoint            string
 	RedisAddr               string
@@ -59,6 +64,24 @@ func Load() (Config, error) {
 	}
 	if cfg.RateLimitBurst, err = getEnvInt("RATE_LIMIT_BURST", 40); err != nil {
 		return cfg, err
+	}
+	if cfg.MaxQueueDepth, err = getEnvInt("MAX_QUEUE_DEPTH", 10000); err != nil {
+		return cfg, err
+	}
+	if cfg.PerQueueLimit, err = getEnvInt("PER_QUEUE_LIMIT", 2500); err != nil {
+		return cfg, err
+	}
+	if cfg.PerTenantLimit, err = getEnvInt("PER_TENANT_LIMIT", 1000); err != nil {
+		return cfg, err
+	}
+	if cfg.MaxQueueDepth < 0 || cfg.PerQueueLimit < 0 || cfg.PerTenantLimit < 0 {
+		return cfg, fmt.Errorf("MAX_QUEUE_DEPTH, PER_QUEUE_LIMIT, and PER_TENANT_LIMIT must not be negative")
+	}
+	if math.IsNaN(cfg.RateLimitRPS) || math.IsInf(cfg.RateLimitRPS, 0) || cfg.RateLimitRPS <= 0 {
+		return cfg, fmt.Errorf("RATE_LIMIT_RPS must be finite and greater than zero")
+	}
+	if cfg.RateLimitBurst <= 0 {
+		return cfg, fmt.Errorf("RATE_LIMIT_BURST must be greater than zero")
 	}
 	if cfg.Concurrency, err = getEnvInt("WORKER_CONCURRENCY", 4); err != nil {
 		return cfg, err

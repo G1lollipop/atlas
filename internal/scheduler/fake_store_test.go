@@ -134,6 +134,31 @@ func (f *fakeStore) UpdateJobStatus(ctx context.Context, id string, status model
 	return nil
 }
 
+func (f *fakeStore) CancelJob(ctx context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	job, ok := f.jobs[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	job.Status = model.JobStatusCanceled
+	requestedAt := time.Now()
+	for _, run := range f.runs {
+		if run.JobID != id {
+			continue
+		}
+		switch run.Status {
+		case model.RunStatusQueued, model.RunStatusScheduled, model.RunStatusAssigned, model.RunStatusFailed:
+			run.Status = model.RunStatusCanceled
+			run.CancelRequestedAt = &requestedAt
+			run.FinishedAt = &requestedAt
+		case model.RunStatusLeased, model.RunStatusRunning:
+			run.CancelRequestedAt = &requestedAt
+		}
+	}
+	return nil
+}
+
 func (f *fakeStore) ListDependencies(ctx context.Context, jobID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -370,6 +395,14 @@ func (f *fakeStore) ExtendLease(ctx context.Context, runID, workerID string, att
 }
 
 func (f *fakeStore) MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error {
+	return nil
+}
+
+func (f *fakeStore) CancellationRequested(ctx context.Context, runID, workerID string, attempt int16) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeStore) MarkCanceled(ctx context.Context, runID, workerID string, attempt int16) error {
 	return nil
 }
 

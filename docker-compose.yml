@@ -56,8 +56,38 @@ services:
 
   redis:
     image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     ports:
       - "6379:6379"
+
+  minio:
+    profiles: [artifacts]
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  minio-setup:
+    profiles: [artifacts]
+    image: quay.io/minio/mc:latest
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    entrypoint: >-
+      /bin/sh -c 'until mc alias set atlas http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD";
+      do sleep 2; done; mc mb --ignore-existing atlas/atlas-artifacts'
 
   jaeger:
     # all-in-one accepts OTLP/HTTP natively on 4318 in recent images - no collector
@@ -80,7 +110,7 @@ services:
       postgres-replica:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://atlas:atlas@postgres:5432/atlas?sslmode=disable
       REPLICA_DATABASE_URL: postgres://atlas:atlas@postgres-replica:5432/atlas?sslmode=disable
@@ -89,6 +119,9 @@ services:
       METRICS_ADDR: :9090
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
       REDIS_ADDR: redis:6379
+      MAX_QUEUE_DEPTH: ${MAX_QUEUE_DEPTH:-10000}
+      PER_QUEUE_LIMIT: ${PER_QUEUE_LIMIT:-2500}
+      PER_TENANT_LIMIT: ${PER_TENANT_LIMIT:-1000}
     ports:
       - "8080:8080"
       - "9090:9090"
@@ -117,6 +150,16 @@ services:
       WORKER_GPU_TYPE: ${WORKER_GPU_TYPE:-}
       WORKER_GPU_MEMORY_MB: ${WORKER_GPU_MEMORY_MB:-0}
       WORKER_LABELS: "${WORKER_LABELS:-}"
+      ARTIFACT_STORE: ${ARTIFACT_STORE:-local}
+      ARTIFACT_LOCAL_DIR: /artifacts
+      ARTIFACT_MAX_BYTES: ${ARTIFACT_MAX_BYTES:-16777216}
+      ARTIFACT_S3_BUCKET: ${ARTIFACT_S3_BUCKET:-atlas-artifacts}
+      ARTIFACT_S3_ENDPOINT: ${ARTIFACT_S3_ENDPOINT:-http://minio:9000}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    volumes:
+      - worker-artifacts:/artifacts
     ports:
       - "9091:9090"
 
@@ -135,6 +178,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       METRICS_ADDR: :9090
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
+      MAX_QUEUE_DEPTH: ${MAX_QUEUE_DEPTH:-10000}
+      PER_QUEUE_LIMIT: ${PER_QUEUE_LIMIT:-2500}
+      PER_TENANT_LIMIT: ${PER_TENANT_LIMIT:-1000}
     ports:
       - "9092:9090"
 
@@ -158,3 +204,5 @@ services:
 volumes:
   postgres-data:
   postgres-replica-data:
+  minio-data:
+  worker-artifacts:

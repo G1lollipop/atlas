@@ -151,16 +151,16 @@ func TestResourceAwareAssignmentsAndReservationRelease(t *testing.T) {
 	registerTestWorker(t, ctx, st, model.Worker{ID: wrongGPUTypeID, Hostname: "l40-host", CPUCapacity: 4000, MemoryCapacityMB: 32768, GPUCount: 1, GPUType: "nvidia-l40", GPUMemoryMB: 49152})
 
 	cpuJob := createResourceTestJob(t, ctx, st, model.NewJobInput{
-		Name: "embedding-" + uuid.NewString(), WorkloadType: "embedding", Priority: 10,
+		Name: "embedding-" + uuid.NewString(), WorkloadType: "embedding", Queue: "embedding", Priority: 10,
 		RequiredCPUMillis: 1000, RequiredMemoryMB: 512, MaxAttempts: 2, TimeoutSeconds: 30,
 	})
 	smallGPUJob := createResourceTestJob(t, ctx, st, model.NewJobInput{
-		Name: "small-inference-" + uuid.NewString(), WorkloadType: "inference", Priority: 20,
+		Name: "small-inference-" + uuid.NewString(), WorkloadType: "inference", Queue: "gpu-small", Priority: 20,
 		RequiredCPUMillis: 100, RequiredMemoryMB: 128, RequiredGPUCount: 1,
 		RequiredGPUMemoryMB: 4096, MaxAttempts: 2, TimeoutSeconds: 30,
 	})
 	largeGPUJob := createResourceTestJob(t, ctx, st, model.NewJobInput{
-		Name: "large-inference-" + uuid.NewString(), WorkloadType: "inference", Priority: 30,
+		Name: "large-inference-" + uuid.NewString(), WorkloadType: "inference", Queue: "gpu-large", Priority: 30,
 		RequiredCPUMillis: 500, RequiredMemoryMB: 1024, RequiredGPUCount: 1,
 		RequiredGPUMemoryMB: 16384, RequiredAccelerator: "NVIDIA-A100", MaxAttempts: 2, TimeoutSeconds: 30,
 	})
