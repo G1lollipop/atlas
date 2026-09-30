@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/G1lollipop/atlas/internal/metrics"
@@ -18,7 +19,10 @@ func (p *Pool) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := p.sendHeartbeat(ctx); err != nil {
+			heartbeatCtx, cancel := context.WithTimeout(ctx, p.heartbeatRequestTimeout())
+			err := p.sendHeartbeat(heartbeatCtx)
+			cancel()
+			if err != nil && !errors.Is(err, context.Canceled) {
 				p.Logger.Error("heartbeat failed", "error", err)
 			}
 		}

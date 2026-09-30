@@ -95,7 +95,7 @@ func TestLeaseRenewalFailureCancelsHandlerAndSkipsLifecycleWrite(t *testing.T) {
 
 func TestHandlerTimeoutStillRecordsFailureWhenRenewalIsCanceled(t *testing.T) {
 	fs := &timeoutRenewalStore{fakeStore: newFakeStore(), started: make(chan struct{}, 1)}
-	p := NewPool(fs, "test-worker", 1, 30*time.Millisecond, 0, testLogger())
+	p := NewPool(fs, "test-worker", 1, 1500*time.Millisecond, 0, testLogger())
 	p.RegisterHandler("slow-job", func(ctx context.Context, _ *model.Job, _ *model.JobRun) (map[string]any, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()

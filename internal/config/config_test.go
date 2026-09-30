@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func setWorkerEnv(t *testing.T, cpu, memory, gpuCount, gpuType, gpuMemory, labels string) {
 	t.Helper()
@@ -14,6 +17,7 @@ func setWorkerEnv(t *testing.T, cpu, memory, gpuCount, gpuType, gpuMemory, label
 
 func TestLoadWorkerCapabilityDefaults(t *testing.T) {
 	setWorkerEnv(t, "", "", "", "", "", "")
+	t.Setenv("WORKER_SHUTDOWN_GRACE_PERIOD", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -30,6 +34,31 @@ func TestLoadWorkerCapabilityDefaults(t *testing.T) {
 	}
 	if cfg.MaxQueueDepth != 10000 || cfg.PerQueueLimit != 2500 || cfg.PerTenantLimit != 1000 {
 		t.Fatalf("default queue limits = %d/%d/%d, want 10000/2500/1000", cfg.MaxQueueDepth, cfg.PerQueueLimit, cfg.PerTenantLimit)
+	}
+	if cfg.WorkerShutdownGracePeriod != 20*time.Second {
+		t.Fatalf("default worker shutdown grace period = %s, want 20s", cfg.WorkerShutdownGracePeriod)
+	}
+}
+
+func TestLoadWorkerShutdownGracePeriod(t *testing.T) {
+	t.Setenv("WORKER_SHUTDOWN_GRACE_PERIOD", "7s")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkerShutdownGracePeriod != 7*time.Second {
+		t.Fatalf("worker shutdown grace period = %s, want 7s", cfg.WorkerShutdownGracePeriod)
+	}
+}
+
+func TestLoadRejectsInvalidWorkerShutdownGracePeriod(t *testing.T) {
+	for _, value := range []string{"nope", "-1s"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("WORKER_SHUTDOWN_GRACE_PERIOD", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() succeeded with WORKER_SHUTDOWN_GRACE_PERIOD=%q", value)
+			}
+		})
 	}
 }
 

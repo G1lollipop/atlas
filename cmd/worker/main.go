@@ -55,7 +55,11 @@ func main() {
 	if err != nil {
 		fatal("init tracing", err)
 	}
-	defer func() { _ = shutdownTracing(context.Background()) }()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(shutdownCtx)
+	}()
 
 	st, err := store.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -77,6 +81,9 @@ func main() {
 	pool := worker.NewPool(st, cfg.WorkerID, cfg.Concurrency, cfg.LeaseDuration, cfg.PollInterval, log)
 	if err := pool.SetRetryPolicy(retryPolicy); err != nil {
 		fatal("configure worker retry policy", err)
+	}
+	if err := pool.SetShutdownGracePeriod(cfg.WorkerShutdownGracePeriod); err != nil {
+		fatal("configure worker shutdown grace period", err)
 	}
 	pool.SetCapabilities(model.Worker{
 		CPUCapacity:      cfg.WorkerCPUCapacityMillis,
@@ -105,6 +112,7 @@ func main() {
 	}()
 
 	log.Info("worker starting", "worker_id", cfg.WorkerID, "concurrency", cfg.Concurrency,
+		"shutdown_grace_period", cfg.WorkerShutdownGracePeriod,
 		"cpu_capacity_millis", cfg.WorkerCPUCapacityMillis,
 		"memory_capacity_mb", cfg.WorkerMemoryCapacityMB,
 		"gpu_count", cfg.WorkerGPUCount,

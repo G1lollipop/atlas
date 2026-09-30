@@ -19,6 +19,7 @@ type Config struct {
 	JWTSecret     string
 	LeaseDuration time.Duration
 	PollInterval  time.Duration
+	WorkerShutdownGracePeriod time.Duration
 	WorkerID      string
 	// Worker resource capacities are advertised at registration and on each
 	// heartbeat. CPU is measured in millicores; memory and GPU memory are MB.
@@ -58,6 +59,12 @@ func Load() (Config, error) {
 	}
 	if cfg.PollInterval, err = getEnvDuration("POLL_INTERVAL", 1*time.Second); err != nil {
 		return cfg, err
+	}
+	if cfg.WorkerShutdownGracePeriod, err = getEnvDuration("WORKER_SHUTDOWN_GRACE_PERIOD", 20*time.Second); err != nil {
+		return cfg, fmt.Errorf("WORKER_SHUTDOWN_GRACE_PERIOD: %w", err)
+	}
+	if cfg.WorkerShutdownGracePeriod < 0 {
+		return cfg, fmt.Errorf("WORKER_SHUTDOWN_GRACE_PERIOD must not be negative")
 	}
 	if cfg.RateLimitRPS, err = getEnvFloat("RATE_LIMIT_RPS", 20); err != nil {
 		return cfg, err

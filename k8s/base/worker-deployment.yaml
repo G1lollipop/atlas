@@ -26,6 +26,7 @@ spec:
         atlas.io/worker-pool: cpu
         atlas.io/gpu-mode: none
     spec:
+      terminationGracePeriodSeconds: 45
       containers:
         - name: worker
           image: atlas-worker:latest
@@ -51,6 +52,8 @@ spec:
               value: "0"
             - name: WORKER_LABELS
               value: '{"pool":"cpu","execution":"cpu"}'
+            - name: WORKER_SHUTDOWN_GRACE_PERIOD
+              value: 20s
           resources:
             requests:
               cpu: 250m
@@ -85,6 +88,7 @@ spec:
         atlas.io/worker-pool: gpu
         atlas.io/gpu-mode: simulated
     spec:
+      terminationGracePeriodSeconds: 45
       containers:
         - name: worker
           image: atlas-worker:latest
@@ -110,6 +114,8 @@ spec:
               value: "24576"
             - name: WORKER_LABELS
               value: '{"pool":"gpu","execution":"simulated","accelerator":"nvidia-l4"}'
+            - name: WORKER_SHUTDOWN_GRACE_PERIOD
+              value: 20s
           resources:
             requests:
               cpu: 500m

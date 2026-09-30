@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -25,6 +26,7 @@ import (
 )
 
 var errCancellationRequested = errors.New("durable run cancellation requested")
+var errShutdownExpired = errors.New("worker shutdown grace period expired")
 
 type Pool struct {
 	Store         store.Store
@@ -32,6 +34,10 @@ type Pool struct {
 	Concurrency   int
 	LeaseDuration time.Duration
 	PollInterval  time.Duration
+	// ShutdownGracePeriod is the maximum time Run allows active handlers to
+	// finish after its parent context is canceled. Zero preserves immediate
+	// cancellation for callers that do not configure graceful shutdown.
+	ShutdownGracePeriod time.Duration
 	Logger        *slog.Logger
 
 	retryPolicy   RetryPolicy
@@ -44,7 +50,11 @@ type Pool struct {
 	handlers       map[string]Handler
 	executionSlots chan struct{}
 	resources      *resourceAdmission
+	heartbeatGate  chan struct{}
 	mu             sync.RWMutex
+	draining       bool
+	shutdownExpired atomic.Bool
+	shutdownDeadline atomic.Int64
 }
 
 func NewPool(st store.Store, workerID string, concurrency int, leaseDuration, pollInterval time.Duration, log *slog.Logger) *Pool {
@@ -65,6 +75,7 @@ func NewPool(st store.Store, workerID string, concurrency int, leaseDuration, po
 		startedAt:      time.Now().UTC(),
 		handlers:       make(map[string]Handler),
 		executionSlots: make(chan struct{}, max(concurrency, 0)),
+		heartbeatGate:  make(chan struct{}, 1),
 		resources:      newResourceAdmission(model.Worker{}),
 	}
 }
@@ -78,6 +89,16 @@ func (p *Pool) SetRetryPolicy(policy RetryPolicy) error {
 	p.retryPolicyMu.Lock()
 	p.retryPolicy = policy
 	p.retryPolicyMu.Unlock()
+	return nil
+}
+
+// SetShutdownGracePeriod configures bounded draining after Run's parent
+// context is canceled. A zero duration cancels handlers immediately.
+func (p *Pool) SetShutdownGracePeriod(grace time.Duration) error {
+	if grace < 0 {
+		return fmt.Errorf("worker shutdown grace period must not be negative")
+	}
+	p.ShutdownGracePeriod = grace
 	return nil
 }
 
@@ -168,36 +189,115 @@ func (p *Pool) Run(ctx context.Context) error {
 		return err
 	}
 
-	var wg sync.WaitGroup
+	// The caller's cancellation stops new claims immediately. Handler execution
+	// uses a separate context below so active work can drain independently.
+	claimCtx, stopClaims := context.WithCancel(ctx)
+	defer stopClaims()
+	runtimeCtx, stopRuntime := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopRuntime()
+	executionCtx, cancelExecutions := context.WithCancel(runtimeCtx)
+	defer cancelExecutions()
+
+	leaseDone := make(chan struct{}, p.Concurrency)
 
 	for i := 0; i < p.Concurrency; i++ {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			p.leaseLoop(ctx)
+			defer func() { leaseDone <- struct{}{} }()
+			p.leaseLoop(claimCtx, executionCtx)
 		}()
 	}
 
-	wg.Add(1)
+	var backgroundWG sync.WaitGroup
+	backgroundWG.Add(1)
 	go func() {
-		defer wg.Done()
-		p.heartbeatLoop(ctx)
+		defer backgroundWG.Done()
+		p.heartbeatLoop(runtimeCtx)
 	}()
 
-	wg.Add(1)
+	backgroundWG.Add(1)
 	go func() {
-		defer wg.Done()
-		p.janitorLoop(ctx)
+		defer backgroundWG.Done()
+		p.janitorLoop(claimCtx)
 	}()
 
 	<-ctx.Done()
-	wg.Wait()
+	p.beginDraining()
+	stopClaims()
+	var graceDeadline time.Time
+	if p.ShutdownGracePeriod <= 0 {
+		p.shutdownExpired.Store(true)
+		cancelExecutions()
+	} else {
+		graceDeadline = time.Now().Add(p.ShutdownGracePeriod)
+		p.shutdownDeadline.Store(graceDeadline.UnixNano())
+	}
+	var graceTimer *time.Timer
+	if p.ShutdownGracePeriod > 0 {
+		graceTimer = time.NewTimer(time.Until(graceDeadline))
+		defer graceTimer.Stop()
+	}
+	// Persist the draining state promptly so the scheduler stops assigning work.
+	// Bound this write independently in case the database is already unhealthy.
+	heartbeatDeadline := graceDeadline
+	if p.ShutdownGracePeriod <= 0 {
+		heartbeatDeadline = time.Now().Add(250 * time.Millisecond)
+	} else if requestDeadline := time.Now().Add(2 * time.Second); heartbeatDeadline.IsZero() || requestDeadline.Before(heartbeatDeadline) {
+		heartbeatDeadline = requestDeadline
+	}
+	heartbeatCtx, cancelHeartbeat := context.WithDeadline(context.Background(), heartbeatDeadline)
+	if err := p.sendHeartbeat(heartbeatCtx); err != nil {
+		p.Logger.Warn("draining worker heartbeat failed", "error", err)
+	}
+	cancelHeartbeat()
+
+	if p.ShutdownGracePeriod <= 0 {
+		stopRuntime()
+		// Give cooperative handlers and background loops a brief opportunity to
+		// exit so callers retain the historical synchronous cancellation behavior.
+		cleanupTimer := time.NewTimer(250 * time.Millisecond)
+		completed := 0
+		for completed < p.Concurrency {
+			select {
+			case <-leaseDone:
+				completed++
+			case <-cleanupTimer.C:
+				completed = p.Concurrency
+			}
+		}
+		cleanupTimer.Stop()
+		backgroundWG.Wait()
+		return ctx.Err()
+	}
+
+	completed := 0
+	for completed < p.Concurrency {
+		select {
+		case <-leaseDone:
+			completed++
+		case <-graceTimer.C:
+			// Do not release leases here. A handler that ignored cancellation may
+			// still be executing, so its lease must simply expire before reclamation.
+			p.shutdownExpired.Store(true)
+			cancelExecutions()
+			stopRuntime()
+			// The remaining handler may ignore context forever. Run must still
+			// return at the configured bound; lifecycle writes are fenced below.
+			return ctx.Err()
+		}
+	}
+	cancelExecutions()
+	stopRuntime()
+	backgroundWG.Wait()
 	return ctx.Err()
 }
 
 func (p *Pool) workerRecord() model.Worker {
 	p.mu.RLock()
 	capabilities := p.capabilities
+	status := model.WorkerStatusAlive
+	if p.draining {
+		status = model.WorkerStatusDraining
+	}
 	labels := make(map[string]string, len(capabilities.Labels))
 	for key, value := range capabilities.Labels {
 		labels[key] = value
@@ -207,7 +307,7 @@ func (p *Pool) workerRecord() model.Worker {
 	return model.Worker{
 		ID:               p.WorkerID,
 		Hostname:         p.hostname,
-		Status:           model.WorkerStatusAlive,
+		Status:           status,
 		StartedAt:        p.startedAt,
 		CPUCapacity:      capabilities.CPUCapacity,
 		MemoryCapacityMB: capabilities.MemoryCapacityMB,
@@ -218,12 +318,56 @@ func (p *Pool) workerRecord() model.Worker {
 	}
 }
 
+func (p *Pool) beginDraining() {
+	p.mu.Lock()
+	p.draining = true
+	p.mu.Unlock()
+}
+
+func (p *Pool) shutdownHasExpired() bool {
+	if p.shutdownExpired.Load() {
+		return true
+	}
+	deadline := p.shutdownDeadline.Load()
+	return deadline != 0 && time.Now().UnixNano() >= deadline
+}
+
 func (p *Pool) sendHeartbeat(ctx context.Context) error {
+	if p.heartbeatGate != nil {
+		select {
+		case p.heartbeatGate <- struct{}{}:
+			defer func() { <-p.heartbeatGate }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return p.Store.UpsertWorkerHeartbeat(ctx, p.workerRecord())
 }
 
+func (p *Pool) heartbeatRequestTimeout() time.Duration {
+	timeout := p.PollInterval * 4
+	if timeout < 100*time.Millisecond {
+		timeout = 100 * time.Millisecond
+	}
+	if timeout > 2*time.Second {
+		timeout = 2 * time.Second
+	}
+	return timeout
+}
+
+func (p *Pool) leaseRenewalRequestTimeout() time.Duration {
+	timeout := p.LeaseDuration / 2
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	if timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	return timeout
+}
+
 // leaseLoop is the body run by each of the Concurrency worker goroutines.
-func (p *Pool) leaseLoop(ctx context.Context) {
+func (p *Pool) leaseLoop(ctx, executionCtx context.Context) {
 	for {
 		if !p.acquireExecutionSlot(ctx) {
 			return
@@ -235,10 +379,13 @@ func (p *Pool) leaseLoop(ctx context.Context) {
 		func() {
 			defer p.releaseExecutionSlot()
 			run, job, err = p.Store.LeaseNextRun(ctx, p.WorkerID, p.LeaseDuration)
-			if err == nil && run != nil {
-				p.executeOne(ctx, run, job)
+			if err == nil && run != nil && ctx.Err() == nil {
+				p.executeOne(executionCtx, run, job)
 			}
 		}()
+		if ctx.Err() != nil {
+			return
+		}
 		if err != nil {
 			p.Logger.Error("lease next run failed", "error", err)
 			if !sleepCtx(ctx, p.PollInterval) {
@@ -295,6 +442,9 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job) {
+	if p.shutdownHasExpired() {
+		return
+	}
 	ctx = tracing.ContextWithTraceContext(ctx, run.TraceParent, run.TraceState)
 	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.executeOne", trace.WithAttributes(
 		attribute.String("job.id", job.ID),
@@ -337,6 +487,9 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	}
 	defer releaseResources()
 
+	if p.shutdownHasExpired() {
+		return
+	}
 	if err := p.Store.MarkRunning(ctx, run.ID, p.WorkerID, run.Attempt); err != nil {
 		if errors.Is(err, store.ErrCanceled) {
 			p.recordCanceled(run)
@@ -351,6 +504,9 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	metrics.JobQueueWaitSeconds.WithLabelValues(metrics.ResourceClass(job.RequiredGPUCount)).Observe(
 		metrics.QueueWaitDurationSeconds(job.CreatedAt, run.ScheduledAt, time.Now(), job.CronExpr == nil && run.Attempt == 1),
 	)
+	if p.shutdownHasExpired() {
+		return
+	}
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(job.TimeoutSeconds)*time.Second)
 	defer cancel()
@@ -372,7 +528,15 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	executionSeconds := time.Since(start).Seconds()
 	metrics.RunDuration.Observe(executionSeconds)
 	metrics.JobExecutionSeconds.Observe(executionSeconds)
+	if p.shutdownHasExpired() {
+		// The lease is left for expiry and recovery. A handler that returned after
+		// the shutdown deadline no longer has authority to write run state.
+		return
+	}
 	if errors.Is(leaseErr, errCancellationRequested) {
+		if p.shutdownHasExpired() {
+			return
+		}
 		if cerr := p.Store.MarkCanceled(ctx, run.ID, p.WorkerID, run.Attempt); cerr != nil && !errors.Is(cerr, store.ErrNotFound) {
 			p.Logger.Error("acknowledge run cancellation failed", "run_id", run.ID, "error", cerr)
 		}
@@ -466,6 +630,9 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 }
 
 func (p *Pool) persistResult(ctx context.Context, run *model.JobRun, result map[string]any) error {
+	if p.shutdownHasExpired() {
+		return errShutdownExpired
+	}
 	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.result.persist", trace.WithAttributes(
 		attribute.String("run.id", run.ID),
 		attribute.Int("run.attempt", int(run.Attempt)),
@@ -476,6 +643,9 @@ func (p *Pool) persistResult(ctx context.Context, run *model.JobRun, result map[
 }
 
 func (p *Pool) persistFailure(ctx context.Context, run *model.JobRun, message string, requeue bool, backoff time.Duration) error {
+	if p.shutdownHasExpired() {
+		return errShutdownExpired
+	}
 	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.failure.persist", trace.WithAttributes(
 		attribute.String("run.id", run.ID),
 		attribute.Int("run.attempt", int(run.Attempt)),
@@ -487,6 +657,9 @@ func (p *Pool) persistFailure(ctx context.Context, run *model.JobRun, message st
 }
 
 func (p *Pool) persistDeadLetter(ctx context.Context, run *model.JobRun, reason string) error {
+	if p.shutdownHasExpired() {
+		return errShutdownExpired
+	}
 	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.dead_letter.persist", trace.WithAttributes(
 		attribute.String("run.id", run.ID),
 		attribute.Int("run.attempt", int(run.Attempt)),
@@ -586,8 +759,14 @@ func (p *Pool) startLeaseRenewal(ctx context.Context, cancelHandler context.Canc
 			case <-stop:
 				return
 			case <-ticker.C:
-				requested, err := p.Store.CancellationRequested(ctx, runID, p.WorkerID, attempt)
+				if p.shutdownHasExpired() {
+					cancelHandler()
+					return
+				}
+				requestCtx, cancelRequest := context.WithTimeout(ctx, p.leaseRenewalRequestTimeout())
+				requested, err := p.Store.CancellationRequested(requestCtx, runID, p.WorkerID, attempt)
 				if err == nil && requested {
+					cancelRequest()
 					errMu.Lock()
 					renewalErr = errCancellationRequested
 					errMu.Unlock()
@@ -595,8 +774,9 @@ func (p *Pool) startLeaseRenewal(ctx context.Context, cancelHandler context.Canc
 					return
 				}
 				if err == nil && p.LeaseDuration > 0 {
-					err = p.Store.ExtendLease(ctx, runID, p.WorkerID, attempt, p.LeaseDuration)
+					err = p.Store.ExtendLease(requestCtx, runID, p.WorkerID, attempt, p.LeaseDuration)
 				}
+				cancelRequest()
 				if err != nil {
 					// Handler timeout or shutdown cancels the renewal request too.
 					// Let executeOne handle that cancellation as a normal run
