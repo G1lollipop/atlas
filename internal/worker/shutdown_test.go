@@ -18,6 +18,22 @@ type blockedHeartbeatStore struct {
 	release    chan struct{}
 }
 
+type cancelAfterInitialHeartbeatStore struct {
+	*fakeStore
+	cancel context.CancelFunc
+	calls  atomic.Int32
+}
+
+func (s *cancelAfterInitialHeartbeatStore) UpsertWorkerHeartbeat(ctx context.Context, heartbeat model.Worker) error {
+	err := s.fakeStore.UpsertWorkerHeartbeat(ctx, heartbeat)
+	if heartbeat.Status == model.WorkerStatusAlive && s.calls.Add(1) == 1 {
+		// Simulate SIGTERM arriving after the initial alive row was committed but
+		// before Pool.Run can start any leasing goroutines.
+		s.cancel()
+	}
+	return err
+}
+
 func (s *blockedHeartbeatStore) UpsertWorkerHeartbeat(ctx context.Context, heartbeat model.Worker) error {
 	if heartbeat.Status == model.WorkerStatusAlive && s.aliveCalls.Add(1) == 2 {
 		close(s.started)
@@ -28,6 +44,36 @@ func (s *blockedHeartbeatStore) UpsertWorkerHeartbeat(ctx context.Context, heart
 		}
 	}
 	return s.fakeStore.UpsertWorkerHeartbeat(ctx, heartbeat)
+}
+
+func TestPoolMarksDrainingWhenCanceledImmediatelyAfterRegistration(t *testing.T) {
+	fs := &cancelAfterInitialHeartbeatStore{fakeStore: newFakeStore()}
+	p := NewPool(fs, "startup-cancel-worker", 1, time.Second, 10*time.Millisecond, testLogger())
+	if err := p.SetShutdownGracePeriod(200 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	fs.cancel = cancel
+
+	err := p.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Pool.Run() error = %v, want context.Canceled", err)
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.heartbeatCalls) != 2 {
+		t.Fatalf("heartbeat calls = %d, want initial alive registration and bounded draining update", len(fs.heartbeatCalls))
+	}
+	if got := fs.heartbeatCalls[0].Status; got != model.WorkerStatusAlive {
+		t.Fatalf("initial worker status = %q, want alive", got)
+	}
+	if got := fs.heartbeatCalls[1].Status; got != model.WorkerStatusDraining {
+		t.Fatalf("final worker status = %q, want draining", got)
+	}
+	if len(fs.leaseWorkerIDs) != 0 {
+		t.Fatalf("lease calls = %d, want none before startup cancellation returns", len(fs.leaseWorkerIDs))
+	}
 }
 
 func TestPoolDrainHeartbeatFollowsInFlightAliveHeartbeat(t *testing.T) {

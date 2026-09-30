@@ -38,22 +38,22 @@ type Pool struct {
 	// finish after its parent context is canceled. Zero preserves immediate
 	// cancellation for callers that do not configure graceful shutdown.
 	ShutdownGracePeriod time.Duration
-	Logger        *slog.Logger
+	Logger              *slog.Logger
 
 	retryPolicy   RetryPolicy
 	retryRandom   func() float64
 	retryPolicyMu sync.Mutex
 
-	capabilities   model.Worker
-	hostname       string
-	startedAt      time.Time
-	handlers       map[string]Handler
-	executionSlots chan struct{}
-	resources      *resourceAdmission
-	heartbeatGate  chan struct{}
-	mu             sync.RWMutex
-	draining       bool
-	shutdownExpired atomic.Bool
+	capabilities     model.Worker
+	hostname         string
+	startedAt        time.Time
+	handlers         map[string]Handler
+	executionSlots   chan struct{}
+	resources        *resourceAdmission
+	heartbeatGate    chan struct{}
+	mu               sync.RWMutex
+	draining         bool
+	shutdownExpired  atomic.Bool
 	shutdownDeadline atomic.Int64
 }
 
@@ -175,17 +175,29 @@ func (p *Pool) Run(ctx context.Context) error {
 
 	// A worker must be visible to the scheduler before it can be assigned work.
 	// Retry transient store failures here, before any leasing goroutine starts.
+	registrationAttempted := false
 	for ctx.Err() == nil {
+		registrationAttempted = true
 		if err := p.sendHeartbeat(ctx); err == nil {
 			break
 		} else {
 			p.Logger.Error("initial worker registration failed", "error", err)
 		}
 		if !sleepCtx(ctx, p.PollInterval) {
+			p.beginDraining()
+			p.sendDrainingHeartbeat(time.Time{})
 			return ctx.Err()
 		}
 	}
 	if err := ctx.Err(); err != nil {
+		// Cancellation can race with a successful registration, or with a
+		// registration request whose commit succeeded before its context error
+		// reached us. Mark the row draining before returning even though the
+		// leasing loops have not started yet.
+		if registrationAttempted {
+			p.beginDraining()
+			p.sendDrainingHeartbeat(time.Time{})
+		}
 		return err
 	}
 
@@ -236,19 +248,7 @@ func (p *Pool) Run(ctx context.Context) error {
 		graceTimer = time.NewTimer(time.Until(graceDeadline))
 		defer graceTimer.Stop()
 	}
-	// Persist the draining state promptly so the scheduler stops assigning work.
-	// Bound this write independently in case the database is already unhealthy.
-	heartbeatDeadline := graceDeadline
-	if p.ShutdownGracePeriod <= 0 {
-		heartbeatDeadline = time.Now().Add(250 * time.Millisecond)
-	} else if requestDeadline := time.Now().Add(2 * time.Second); heartbeatDeadline.IsZero() || requestDeadline.Before(heartbeatDeadline) {
-		heartbeatDeadline = requestDeadline
-	}
-	heartbeatCtx, cancelHeartbeat := context.WithDeadline(context.Background(), heartbeatDeadline)
-	if err := p.sendHeartbeat(heartbeatCtx); err != nil {
-		p.Logger.Warn("draining worker heartbeat failed", "error", err)
-	}
-	cancelHeartbeat()
+	p.sendDrainingHeartbeat(graceDeadline)
 
 	if p.ShutdownGracePeriod <= 0 {
 		stopRuntime()
@@ -342,6 +342,31 @@ func (p *Pool) sendHeartbeat(ctx context.Context) error {
 		}
 	}
 	return p.Store.UpsertWorkerHeartbeat(ctx, p.workerRecord())
+}
+
+// sendDrainingHeartbeat persists the no-new-assignments status with a bounded
+// request. During shutdown it fits within the drain deadline; when registration
+// is canceled before the drain loop starts, it uses the configured grace period
+// as its bound. The zero-grace fallback preserves a short best-effort update.
+func (p *Pool) sendDrainingHeartbeat(graceDeadline time.Time) {
+	now := time.Now()
+	heartbeatDeadline := graceDeadline
+	if heartbeatDeadline.IsZero() {
+		if p.ShutdownGracePeriod > 0 {
+			heartbeatDeadline = now.Add(p.ShutdownGracePeriod)
+		} else {
+			heartbeatDeadline = now.Add(250 * time.Millisecond)
+		}
+	}
+	if requestDeadline := now.Add(2 * time.Second); requestDeadline.Before(heartbeatDeadline) {
+		heartbeatDeadline = requestDeadline
+	}
+
+	heartbeatCtx, cancelHeartbeat := context.WithDeadline(context.Background(), heartbeatDeadline)
+	defer cancelHeartbeat()
+	if err := p.sendHeartbeat(heartbeatCtx); err != nil {
+		p.Logger.Warn("draining worker heartbeat failed", "error", err)
+	}
 }
 
 func (p *Pool) heartbeatRequestTimeout() time.Duration {
