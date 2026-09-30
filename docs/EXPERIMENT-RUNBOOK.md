@@ -60,10 +60,15 @@ GPU tests are simulations. The report measures reserved VRAM, device reservation
 For plots, install Python `matplotlib` and `numpy` in the analysis environment, then pass the measured report directly:
 
 ```bash
-python3 scripts/experiments/plot.py artifacts/experiments/mixed-<run-id>/report.json
+python3 scripts/experiments/plot.py artifacts/experiments/mixed-<run-id>/report.json --out artifacts/experiments/plots
 ```
 
-The plotter writes standalone PNG files in the report's `plots/` directory. It reads report values only and lists failed or partial trials before plotting their available measurements. Keep the report JSON and CSV files alongside plots as the source data.
+The plotter accepts multiple JSON or gzip-compressed JSON reports and writes
+standalone PNG/SVG figures plus `summary.json` to `--out`. It reads measured
+values only, lists failed or partial trials, and excludes them from complete
+batch aggregates while retaining their evidence. Summary points are medians
+with minimum/maximum ranges, not confidence intervals. Keep the report JSON
+and CSV files alongside plots as source data.
 
 ## Process-based recovery scenarios
 

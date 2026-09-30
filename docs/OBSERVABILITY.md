@@ -66,6 +66,9 @@ queue series disappear from the next successful scrape.
 Worker snapshots retain recent heartbeats for ten heartbeat TTLs (five minutes
 with the default 30-second TTL). Stale workers inside that window report
 `atlas_worker_alive=0` and zero reservations; older worker series disappear.
+Fresh draining workers remain alive in this snapshot and retain their active
+reservations. Alive means reachable, not accepting new work: assignment and
+claim paths explicitly exclude workers whose status is `draining`.
 
 ## Grafana and scaling
 

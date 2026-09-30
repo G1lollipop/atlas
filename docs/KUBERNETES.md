@@ -68,6 +68,17 @@ pool. The label selector and the extended resource limit serve separate jobs:
 the selector chooses the model-specific node pool, while `nvidia.com/gpu: 1`
 reserves a device from the Kubernetes device plugin.
 
+## Worker termination
+
+Both worker pools set `WORKER_SHUTDOWN_GRACE_PERIOD=20s` and
+`terminationGracePeriodSeconds: 45`. SIGTERM stops new claims and marks the
+worker draining. Existing handlers keep their execution contexts, heartbeat,
+and lease renewal during the drain window. Work that exceeds that window loses
+renewal and recovers through lease expiry; a context-ignoring handler cannot
+write a late completion through the stopped pool. The remaining pod termination
+budget allows bounded metrics and tracing shutdown. Tune both values together
+when handlers need a different drain window.
+
 ## Prometheus scraping
 
 The API Service exposes `http` and `metrics` ports. The scheduler and each
