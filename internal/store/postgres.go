@@ -13,11 +13,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/G1lollipop/atlas/internal/model"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
-const jobColumns = `id, name, payload, cron_expr, priority, workload_type, queue, tenant_id, required_cpu_millis, required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator, max_attempts, timeout_seconds, status, idempotency_key, created_at, updated_at`
+const jobColumns = `id, name, payload, cron_expr, priority, workload_type, queue, tenant_id, required_cpu_millis, required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator, max_attempts, timeout_seconds, status, idempotency_key, traceparent, tracestate, created_at, updated_at`
 
-const runColumns = `id, execution_key, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, assigned_worker_id, assigned_at, assignment_expires_at, started_at, finished_at, result, error, cancel_requested_at, created_at`
+const runColumns = `id, execution_key, job_id, status, attempt, priority, scheduled_at, leased_by, leased_at, lease_expires_at, assigned_worker_id, assigned_at, assignment_expires_at, started_at, finished_at, result, error, traceparent, tracestate, cancel_requested_at, created_at`
 
 // PostgresStore is the production store.Store implementation backed by Postgres.
 type PostgresStore struct {
@@ -127,7 +130,7 @@ func scanJobRow(ctx context.Context, q querier, row rowScanner) (*model.Job, err
 	if err := row.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 		&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
 		&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
-		&job.CreatedAt, &job.UpdatedAt); err != nil {
+		&job.TraceParent, &job.TraceState, &job.CreatedAt, &job.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(payloadRaw, &job.Payload); err != nil {
@@ -175,7 +178,7 @@ func scanRun(row rowScanner) (*model.JobRun, error) {
 	if err := row.Scan(&run.ID, &run.ExecutionKey, &run.JobID, &run.Status, &run.Attempt, &run.Priority, &run.ScheduledAt,
 		&run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt, &run.AssignedWorkerID, &run.AssignedAt,
 		&run.AssignmentExpiresAt, &run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error,
-		&run.CancelRequestedAt, &run.CreatedAt); err != nil {
+		&run.TraceParent, &run.TraceState, &run.CancelRequestedAt, &run.CreatedAt); err != nil {
 		return nil, err
 	}
 	if resultRaw != nil {
@@ -191,7 +194,10 @@ func fetchRun(ctx context.Context, q querier, id string) (*model.JobRun, error) 
 	return scanRun(row)
 }
 
-func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (*model.Job, error) {
+func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (out *model.Job, retErr error) {
+	opCtx, span := otel.Tracer("atlas/store").Start(ctx, "api.CreateJob")
+	defer func() { finishTransitionSpan(span, retErr) }()
+	ctx = opCtx
 	payloadRaw, err := json.Marshal(in.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
@@ -208,6 +214,7 @@ func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (*m
 	if err := ValidateTenant(tenant); err != nil {
 		return nil, err
 	}
+	traceparent, tracestate := persistedTraceContext(ctx)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -244,16 +251,16 @@ func (s *PostgresStore) CreateJob(ctx context.Context, in model.NewJobInput) (*m
 	row := tx.QueryRow(ctx, `
 		INSERT INTO jobs (name, payload, cron_expr, priority, workload_type, queue, tenant_id, required_cpu_millis,
 			required_memory_mb, required_gpu_count, required_gpu_memory_mb, required_accelerator,
-			max_attempts, timeout_seconds, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			max_attempts, timeout_seconds, idempotency_key, traceparent, tracestate)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		RETURNING `+jobColumns, in.Name, payloadRaw, in.CronExpr, in.Priority, workloadType,
 		queue, tenant, in.RequiredCPUMillis, in.RequiredMemoryMB, in.RequiredGPUCount, in.RequiredGPUMemoryMB,
-		in.RequiredAccelerator, in.MaxAttempts, in.TimeoutSeconds, in.IdempotencyKey)
+		in.RequiredAccelerator, in.MaxAttempts, in.TimeoutSeconds, in.IdempotencyKey, traceparent, tracestate)
 
 	if err := row.Scan(&job.ID, &job.Name, &outRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 		&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
 		&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
-		&job.CreatedAt, &job.UpdatedAt); err != nil {
+		&job.TraceParent, &job.TraceState, &job.CreatedAt, &job.UpdatedAt); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, ErrIdempotencyConflict
@@ -323,7 +330,7 @@ func (s *PostgresStore) ListJobs(ctx context.Context, status *model.JobStatus, l
 		if err := rows.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
 			&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
-			&job.CreatedAt, &job.UpdatedAt); err != nil {
+			&job.TraceParent, &job.TraceState, &job.CreatedAt, &job.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(payloadRaw, &job.Payload); err != nil {
@@ -400,7 +407,7 @@ func (s *PostgresStore) HasActiveRun(ctx context.Context, jobID string) (bool, e
 	return exists, err
 }
 
-func (s *PostgresStore) CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (*model.JobRun, error) {
+func (s *PostgresStore) CreateRun(ctx context.Context, jobID string, priority int16, scheduledAt time.Time) (out *model.JobRun, retErr error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -410,23 +417,31 @@ func (s *PostgresStore) CreateRun(ctx context.Context, jobID string, priority in
 	var status model.JobStatus
 	var cronExpr *string
 	var queue, tenant string
-	err = tx.QueryRow(ctx, `SELECT status, cron_expr, queue, tenant_id FROM jobs WHERE id = $1 FOR UPDATE`, jobID).
-		Scan(&status, &cronExpr, &queue, &tenant)
+	var jobTraceparent, jobTracestate string
+	err = tx.QueryRow(ctx, `SELECT status, cron_expr, queue, tenant_id, traceparent, tracestate FROM jobs WHERE id = $1 FOR UPDATE`, jobID).
+		Scan(&status, &cronExpr, &queue, &tenant, &jobTraceparent, &jobTracestate)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	promotionCtx, promotionSpan := startStoredSpan(ctx, jobTraceparent, jobTracestate, "scheduler.PromoteJob",
+		attribute.String("job.id", jobID))
+	defer func() { finishTransitionSpan(promotionSpan, retErr) }()
+	opCtx, span := otel.Tracer("atlas/store").Start(promotionCtx, "scheduler.CreateRun", trace.WithAttributes(
+		attribute.String("job.id", jobID),
+	))
+	defer func() { finishTransitionSpan(span, retErr) }()
 	if status != model.JobStatusActive {
 		return nil, ErrNotFound
 	}
 	var hasPriorRun bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = $1)`, jobID).Scan(&hasPriorRun); err != nil {
+	if err := tx.QueryRow(opCtx, `SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = $1)`, jobID).Scan(&hasPriorRun); err != nil {
 		return nil, err
 	}
 	var hasActiveRun bool
-	if err := tx.QueryRow(ctx, `
+	if err := tx.QueryRow(opCtx, `
 		SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = $1
 			AND status IN ('queued', 'scheduled', 'assigned', 'leased', 'running'))
 	`, jobID).Scan(&hasActiveRun); err != nil {
@@ -436,47 +451,52 @@ func (s *PostgresStore) CreateRun(ctx context.Context, jobID string, priority in
 		return nil, ErrRunAlreadyExists
 	}
 	reservationHeld := cronExpr == nil && !hasPriorRun
-	if err := admitQueueWork(ctx, tx, s.queueLimits, queue, tenant, reservationHeld); err != nil {
+	if err := admitQueueWork(opCtx, tx, s.queueLimits, queue, tenant, reservationHeld); err != nil {
 		return nil, err
 	}
+	traceparent, tracestate := persistedTraceContext(opCtx)
 
-	row := tx.QueryRow(ctx, `
-		INSERT INTO job_runs (job_id, status, priority, scheduled_at)
-		VALUES ($1, 'queued', $2, $3)
-		RETURNING `+runColumns, jobID, priority, scheduledAt)
+	row := tx.QueryRow(opCtx, `
+		INSERT INTO job_runs (job_id, status, priority, scheduled_at, traceparent, tracestate)
+		VALUES ($1, 'queued', $2, $3, $4, $5)
+		RETURNING `+runColumns, jobID, priority, scheduledAt, traceparent, tracestate)
 	run, err := scanRun(row)
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(opCtx); err != nil {
 		return nil, err
 	}
 	return run, nil
 }
 
 func (s *PostgresStore) ScheduleDueRuns(ctx context.Context) (int, error) {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE job_runs
-		SET status = 'scheduled'
+	return transitionStoredRuns(ctx, s.pool, `
+		SELECT id, traceparent, tracestate FROM job_runs
 		WHERE status = 'queued' AND scheduled_at <= now()
-	`)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
+		ORDER BY scheduled_at, id
+		FOR UPDATE SKIP LOCKED
+	`, `
+		UPDATE job_runs AS run
+		SET status = 'scheduled', traceparent = transition.traceparent, tracestate = transition.tracestate
+		FROM unnest($1::text[], $2::text[], $3::text[]) AS transition(run_id, traceparent, tracestate)
+		WHERE run.id = transition.run_id::uuid AND run.status = 'queued'
+	`, "scheduler.ScheduleRun")
 }
 
 func (s *PostgresStore) RequeueExpiredAssignments(ctx context.Context) (int, error) {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE job_runs
-		SET status = 'queued', assigned_worker_id = NULL, assigned_at = NULL,
-		    assignment_expires_at = NULL
+	return transitionStoredRuns(ctx, s.pool, `
+		SELECT id, traceparent, tracestate FROM job_runs
 		WHERE status = 'assigned' AND assignment_expires_at <= now()
-	`)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
+		ORDER BY assignment_expires_at, id
+		FOR UPDATE SKIP LOCKED
+	`, `
+		UPDATE job_runs AS run
+		SET status = 'queued', assigned_worker_id = NULL, assigned_at = NULL,
+		    assignment_expires_at = NULL, traceparent = transition.traceparent, tracestate = transition.tracestate
+		FROM unnest($1::text[], $2::text[], $3::text[]) AS transition(run_id, traceparent, tracestate)
+		WHERE run.id = transition.run_id::uuid AND run.status = 'assigned'
+	`, "scheduler.RequeueExpiredAssignment")
 }
 
 func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int) ([]*model.RunCandidate, error) {
@@ -490,11 +510,11 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 		SELECT r.id, r.execution_key, r.job_id, r.status, r.attempt, r.priority, r.scheduled_at,
 		       r.leased_by, r.leased_at, r.lease_expires_at, r.assigned_worker_id,
 	       r.assigned_at, r.assignment_expires_at, r.started_at, r.finished_at,
-		       r.result, r.error, r.cancel_requested_at, r.created_at,
+	       r.result, r.error, r.traceparent, r.tracestate, r.cancel_requested_at, r.created_at,
 		       j.id, j.name, j.payload, j.cron_expr, j.priority, j.workload_type, j.queue, j.tenant_id,
 		       j.required_cpu_millis, j.required_memory_mb, j.required_gpu_count,
 		       j.required_gpu_memory_mb, j.required_accelerator, j.max_attempts,
-		       j.timeout_seconds, j.status, j.idempotency_key, j.created_at, j.updated_at
+	       j.timeout_seconds, j.status, j.idempotency_key, j.traceparent, j.tracestate, j.created_at, j.updated_at
 		FROM job_runs r
 		JOIN jobs j ON j.id = r.job_id
 		WHERE r.status = 'scheduled' AND r.scheduled_at <= now()
@@ -515,11 +535,11 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 		if err := rows.Scan(&run.ID, &run.ExecutionKey, &run.JobID, &run.Status, &run.Attempt, &run.Priority,
 			&run.ScheduledAt, &run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt,
 			&run.AssignedWorkerID, &run.AssignedAt, &run.AssignmentExpiresAt,
-			&run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.CancelRequestedAt, &run.CreatedAt,
+			&run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.TraceParent, &run.TraceState, &run.CancelRequestedAt, &run.CreatedAt,
 			&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
 			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount,
 			&job.RequiredGPUMemoryMB, &job.RequiredAccelerator, &job.MaxAttempts,
-			&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.TraceParent, &job.TraceState, &job.CreatedAt, &job.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if resultRaw != nil {
@@ -535,7 +555,9 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 	return candidates, rows.Err()
 }
 
-func (s *PostgresStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error) {
+func (s *PostgresStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (assigned bool, retErr error) {
+	var span trace.Span
+	defer func() { finishTransitionSpan(span, retErr) }()
 	if assignmentTTL <= 0 || heartbeatTTL <= 0 {
 		return false, fmt.Errorf("assignment and heartbeat TTLs must be positive")
 	}
@@ -563,23 +585,26 @@ func (s *PostgresStore) AssignRun(ctx context.Context, runID, workerID string, a
 		return false, err
 	}
 
-	var jobID string
+	var jobID, runTraceparent, runTracestate string
 	err = tx.QueryRow(ctx, `
-		SELECT job_id
+		SELECT job_id, traceparent, tracestate
 		FROM job_runs
 		WHERE id = $1 AND status = 'scheduled' AND scheduled_at <= now()
 		FOR UPDATE SKIP LOCKED
-	`, runID).Scan(&jobID)
+	`, runID).Scan(&jobID, &runTraceparent, &runTracestate)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
 		return false, err
 	}
+	opCtx, started := startStoredSpan(ctx, runTraceparent, runTracestate, "scheduler.AssignRun",
+		attribute.String("run.id", runID), attribute.String("worker.id", workerID))
+	span = started
 
 	var requiredCPU, requiredMemory, requiredGPU, requiredGPUMemory int64
 	var requiredAccelerator string
-	err = tx.QueryRow(ctx, `
+	err = tx.QueryRow(opCtx, `
 		SELECT required_cpu_millis, required_memory_mb, required_gpu_count,
 		       required_gpu_memory_mb, required_accelerator
 		FROM jobs WHERE id = $1
@@ -590,7 +615,7 @@ func (s *PostgresStore) AssignRun(ctx context.Context, runID, workerID string, a
 	}
 
 	var reservedCPU, reservedMemory, reservedGPU, reservedGPUMemory int64
-	err = tx.QueryRow(ctx, `
+	err = tx.QueryRow(opCtx, `
 		SELECT COALESCE(SUM(j.required_cpu_millis), 0)::bigint,
 		       COALESCE(SUM(j.required_memory_mb), 0)::bigint,
 		       COALESCE(SUM(j.required_gpu_count), 0)::bigint,
@@ -613,25 +638,29 @@ func (s *PostgresStore) AssignRun(ctx context.Context, runID, workerID string, a
 		return false, nil
 	}
 
-	tag, err := tx.Exec(ctx, `
+	traceparent, tracestate := persistedTraceContext(opCtx)
+	tag, err := tx.Exec(opCtx, `
 		UPDATE job_runs
 		SET status = 'assigned', assigned_worker_id = $1, assigned_at = now(),
-		    assignment_expires_at = now() + ($2::bigint * INTERVAL '1 millisecond')
-		WHERE id = $3 AND status = 'scheduled'
-	`, workerID, assignmentTTLMillis, runID)
+		    assignment_expires_at = now() + ($2::bigint * INTERVAL '1 millisecond'),
+		    traceparent = $3, tracestate = $4
+		WHERE id = $5 AND status = 'scheduled'
+	`, workerID, assignmentTTLMillis, traceparent, tracestate, runID)
 	if err != nil {
 		return false, err
 	}
 	if tag.RowsAffected() == 0 {
 		return false, nil
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(opCtx); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (*model.JobRun, *model.Job, error) {
+func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, leaseDuration time.Duration) (leasedRun *model.JobRun, leasedJob *model.Job, retErr error) {
+	var span trace.Span
+	defer func() { finishTransitionSpan(span, retErr) }()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -655,11 +684,11 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 		return nil, nil, err
 	}
 
-	var runID, jobID string
+	var runID, jobID, runTraceparent, runTracestate string
 	// Assignments are already placed by the scheduler policy. Preserve the same
 	// priority-plus-age ordering when one worker has multiple assignments.
 	err = tx.QueryRow(ctx, `
-		SELECT r.id, r.job_id
+		SELECT r.id, r.job_id, r.traceparent, r.tracestate
 		FROM job_runs r
 		WHERE r.status = 'assigned' AND r.assigned_worker_id = $1
 		  AND r.assignment_expires_at > now() AND r.scheduled_at <= now()
@@ -667,17 +696,20 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 		         r.scheduled_at ASC, r.created_at ASC, r.id ASC
 		LIMIT 1
 		FOR UPDATE OF r SKIP LOCKED
-	`, workerID).Scan(&runID, &jobID)
+	`, workerID).Scan(&runID, &jobID, &runTraceparent, &runTracestate)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, nil
 		}
 		return nil, nil, err
 	}
+	opCtx, started := startStoredSpan(ctx, runTraceparent, runTracestate, "worker.LeaseRun",
+		attribute.String("run.id", runID), attribute.String("worker.id", workerID))
+	span = started
 
 	var requiredCPU, requiredMemory, requiredGPU, requiredGPUMemory int64
 	var requiredAccelerator string
-	if err := tx.QueryRow(ctx, `
+	if err := tx.QueryRow(opCtx, `
 		SELECT required_cpu_millis, required_memory_mb, required_gpu_count,
 		       required_gpu_memory_mb, required_accelerator
 		FROM jobs WHERE id = $1
@@ -687,7 +719,7 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 	}
 
 	var reservedCPU, reservedMemory, reservedGPU, reservedGPUMemory int64
-	if err := tx.QueryRow(ctx, `
+	if err := tx.QueryRow(opCtx, `
 		SELECT COALESCE(SUM(j.required_cpu_millis), 0)::bigint,
 		       COALESCE(SUM(j.required_memory_mb), 0)::bigint,
 		       COALESCE(SUM(j.required_gpu_count), 0)::bigint,
@@ -709,37 +741,40 @@ func (s *PostgresStore) LeaseNextRun(ctx context.Context, workerID string, lease
 		requiredGPU*requiredGPUMemory <= int64(worker.GPUCount)*int64(worker.GPUMemoryMB)-reservedGPUMemory &&
 		(requiredAccelerator == "" || strings.EqualFold(strings.TrimSpace(requiredAccelerator), strings.TrimSpace(worker.GPUType)))
 	if !fits {
-		if _, err := tx.Exec(ctx, `
+		traceparent, tracestate := persistedTraceContext(opCtx)
+		if _, err := tx.Exec(opCtx, `
 			UPDATE job_runs
 			SET status = 'queued', scheduled_at = now(), assigned_worker_id = NULL,
-			    assigned_at = NULL, assignment_expires_at = NULL
+			    assigned_at = NULL, assignment_expires_at = NULL, traceparent = $3, tracestate = $4
 			WHERE id = $1 AND status = 'assigned' AND assigned_worker_id = $2
-		`, runID, workerID); err != nil {
+		`, runID, workerID, traceparent, tracestate); err != nil {
 			return nil, nil, err
 		}
-		if err := tx.Commit(ctx); err != nil {
+		if err := tx.Commit(opCtx); err != nil {
 			return nil, nil, err
 		}
 		return nil, nil, nil
 	}
 
-	if _, err := tx.Exec(ctx, `
+	traceparent, tracestate := persistedTraceContext(opCtx)
+	if _, err := tx.Exec(opCtx, `
 		UPDATE job_runs
 		SET status = 'leased', leased_by = $1, leased_at = now(),
-		    lease_expires_at = now() + ($2::bigint * INTERVAL '1 millisecond'), attempt = attempt + 1
-		WHERE id = $3 AND status = 'assigned' AND assigned_worker_id = $1
-	`, workerID, durationMilliseconds(leaseDuration), runID); err != nil {
+		    lease_expires_at = now() + ($2::bigint * INTERVAL '1 millisecond'), attempt = attempt + 1,
+		    traceparent = $3, tracestate = $4
+		WHERE id = $5 AND status = 'assigned' AND assigned_worker_id = $1
+	`, workerID, durationMilliseconds(leaseDuration), traceparent, tracestate, runID); err != nil {
 		return nil, nil, err
 	}
-	run, err := fetchRun(ctx, tx, runID)
+	run, err := fetchRun(opCtx, tx, runID)
 	if err != nil {
 		return nil, nil, err
 	}
-	job, err := fetchJob(ctx, tx, jobID)
+	job, err := fetchJob(opCtx, tx, jobID)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(opCtx); err != nil {
 		return nil, nil, err
 	}
 	return run, job, nil
@@ -760,12 +795,22 @@ func (s *PostgresStore) ExtendLease(ctx context.Context, runID, workerID string,
 }
 
 func (s *PostgresStore) MarkRunning(ctx context.Context, runID, workerID string, attempt int16) error {
+	traceparent, tracestate := persistedTraceContext(ctx)
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE job_runs SET status = 'running', started_at = now()
-		WHERE id = $1 AND leased_by = $2 AND attempt = $3
+		UPDATE job_runs
+		SET status = 'running', started_at = now(),
+		    traceparent = CASE
+		      WHEN $1 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($1, '-', 2)) THEN $1
+		      ELSE job_runs.traceparent
+		    END,
+		    tracestate = CASE
+		      WHEN $1 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($1, '-', 2)) THEN $2
+		      ELSE job_runs.tracestate
+		    END
+		WHERE id = $3 AND leased_by = $4 AND attempt = $5
 		  AND status = 'leased' AND lease_expires_at > now()
 		  AND cancel_requested_at IS NULL
-	`, runID, workerID, attempt)
+	`, traceparent, tracestate, runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
@@ -785,14 +830,23 @@ func (s *PostgresStore) CompleteRun(ctx context.Context, runID, workerID string,
 	if err != nil {
 		return fmt.Errorf("marshal result: %w", err)
 	}
+	traceparent, tracestate := persistedTraceContext(ctx)
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE job_runs
 		SET status = 'succeeded', finished_at = now(), result = $1,
+		    traceparent = CASE
+		      WHEN $2 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($2, '-', 2)) THEN $2
+		      ELSE job_runs.traceparent
+		    END,
+		    tracestate = CASE
+		      WHEN $2 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($2, '-', 2)) THEN $3
+		      ELSE job_runs.tracestate
+		    END,
 		    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
-		WHERE id = $2 AND leased_by = $3 AND attempt = $4
+		WHERE id = $4 AND leased_by = $5 AND attempt = $6
 		  AND status = 'running' AND lease_expires_at > now()
 		  AND cancel_requested_at IS NULL
-	`, raw, runID, workerID, attempt)
+	`, raw, traceparent, tracestate, runID, workerID, attempt)
 	if err != nil {
 		return err
 	}
@@ -810,27 +864,44 @@ func (s *PostgresStore) CompleteRun(ctx context.Context, runID, workerID string,
 func (s *PostgresStore) FailRun(ctx context.Context, runID, workerID string, attempt int16, errMsg string, requeue bool, backoff time.Duration) error {
 	var tag pgconn.CommandTag
 	var err error
+	traceparent, tracestate := persistedTraceContext(ctx)
 	if requeue {
 		tag, err = s.pool.Exec(ctx, `
 			UPDATE job_runs
 			SET status = 'queued', scheduled_at = now() + ($1::bigint * INTERVAL '1 millisecond'), error = $2,
+			    traceparent = CASE
+			      WHEN $3 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($3, '-', 2)) THEN $3
+			      ELSE job_runs.traceparent
+			    END,
+			    tracestate = CASE
+			      WHEN $3 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($3, '-', 2)) THEN $4
+			      ELSE job_runs.tracestate
+			    END,
 			    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
 			    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL
-			WHERE id = $3 AND leased_by = $4 AND attempt = $5
+			WHERE id = $5 AND leased_by = $6 AND attempt = $7
 			  AND status IN ('leased', 'running') AND lease_expires_at > now()
 			  AND cancel_requested_at IS NULL
 			  AND EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_runs.job_id AND jobs.status <> 'canceled')
-		`, durationMilliseconds(backoff), errMsg, runID, workerID, attempt)
+		`, durationMilliseconds(backoff), errMsg, traceparent, tracestate, runID, workerID, attempt)
 	} else {
 		tag, err = s.pool.Exec(ctx, `
 			UPDATE job_runs
 			SET status = 'failed', finished_at = now(), error = $1,
+			    traceparent = CASE
+			      WHEN $2 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($2, '-', 2)) THEN $2
+			      ELSE job_runs.traceparent
+			    END,
+			    tracestate = CASE
+			      WHEN $2 <> '' AND (job_runs.traceparent = '' OR split_part(job_runs.traceparent, '-', 2) = split_part($2, '-', 2)) THEN $3
+			      ELSE job_runs.tracestate
+			    END,
 			    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL
-			WHERE id = $2 AND leased_by = $3 AND attempt = $4
+			WHERE id = $4 AND leased_by = $5 AND attempt = $6
 			  AND status IN ('leased', 'running') AND lease_expires_at > now()
 			  AND cancel_requested_at IS NULL
 			  AND EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_runs.job_id AND jobs.status <> 'canceled')
-		`, errMsg, runID, workerID, attempt)
+		`, errMsg, traceparent, tracestate, runID, workerID, attempt)
 	}
 	if err != nil {
 		return err
@@ -846,7 +917,7 @@ func (s *PostgresStore) FailRun(ctx context.Context, runID, workerID string, att
 	return nil
 }
 
-func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason string) error {
+func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason string) (retErr error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -863,19 +934,26 @@ func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason strin
 	if lockedRun.Status != model.RunStatusFailed {
 		return ErrNotFound
 	}
+	opCtx, span := startStoredSpan(ctx, lockedRun.TraceParent, lockedRun.TraceState, "worker.MarkDead",
+		attribute.String("run.id", runID))
+	defer func() { finishTransitionSpan(span, retErr) }()
 
 	payloadRaw, err := json.Marshal(map[string]any{"result": lockedRun.Result, "error": lockedRun.Error})
 	if err != nil {
 		return fmt.Errorf("marshal dead letter payload: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx, `
+	if _, err := tx.Exec(opCtx, `
 		INSERT INTO dead_letters (job_run_id, reason, payload) VALUES ($1, $2, $3)
 	`, runID, reason, payloadRaw); err != nil {
 		return err
 	}
 
-	tag, err := tx.Exec(ctx, `UPDATE job_runs SET status = 'dead' WHERE id = $1 AND status = 'failed'`, runID)
+	traceparent, tracestate := persistedTraceContext(opCtx)
+	tag, err := tx.Exec(opCtx, `
+		UPDATE job_runs SET status = 'dead', traceparent = $1, tracestate = $2
+		WHERE id = $3 AND status = 'failed'
+	`, traceparent, tracestate, runID)
 	if err != nil {
 		return err
 	}
@@ -883,32 +961,25 @@ func (s *PostgresStore) MarkDead(ctx context.Context, runID string, reason strin
 		return ErrNotFound
 	}
 
-	return tx.Commit(ctx)
+	return tx.Commit(opCtx)
 }
 
 func (s *PostgresStore) ReclaimExpiredLeases(ctx context.Context) (int, error) {
-	rows, err := s.pool.Query(ctx, `
-		UPDATE job_runs
-		SET status = CASE WHEN cancel_requested_at IS NULL THEN 'queued' ELSE 'canceled' END,
-		    finished_at = CASE WHEN cancel_requested_at IS NULL THEN finished_at ELSE COALESCE(finished_at, now()) END,
-		    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
-		    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL
+	return transitionStoredRuns(ctx, s.pool, `
+		SELECT id, traceparent, tracestate FROM job_runs
 		WHERE status IN ('leased', 'running') AND lease_expires_at < now()
-		RETURNING id
-	`)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	count := 0
-	for rows.Next() {
-		count++
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	return count, nil
+		ORDER BY lease_expires_at, id
+		FOR UPDATE SKIP LOCKED
+	`, `
+		UPDATE job_runs AS run
+		SET status = CASE WHEN run.cancel_requested_at IS NULL THEN 'queued' ELSE 'canceled' END,
+		    finished_at = CASE WHEN run.cancel_requested_at IS NULL THEN run.finished_at ELSE COALESCE(run.finished_at, now()) END,
+		    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
+		    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL,
+		    traceparent = transition.traceparent, tracestate = transition.tracestate
+		FROM unnest($1::text[], $2::text[], $3::text[]) AS transition(run_id, traceparent, tracestate)
+		WHERE run.id = transition.run_id::uuid AND run.status IN ('leased', 'running')
+	`, "worker.ReclaimExpiredLease")
 }
 
 func (s *PostgresStore) GetRun(ctx context.Context, id string) (*model.JobRun, error) {
@@ -1017,20 +1088,13 @@ func (s *PostgresStore) ListWorkers(ctx context.Context) ([]*model.Worker, error
 		if err := json.Unmarshal(labels, &w.Labels); err != nil {
 			return nil, fmt.Errorf("unmarshal worker labels: %w", err)
 		}
-		w.AvailableCPUMillis = maxInt64(0, int64(w.CPUCapacity)-w.CurrentCPUReserved)
-		w.AvailableMemoryMB = maxInt64(0, int64(w.MemoryCapacityMB)-w.CurrentMemoryReserved)
-		w.AvailableGPUCount = maxInt64(0, int64(w.GPUCount)-w.CurrentGPUReserved)
-		w.AvailableGPUMemoryMB = maxInt64(0, int64(w.GPUCount)*int64(w.GPUMemoryMB)-w.CurrentGPUMemoryReserved)
+		w.AvailableCPUMillis = max(0, int64(w.CPUCapacity)-w.CurrentCPUReserved)
+		w.AvailableMemoryMB = max(0, int64(w.MemoryCapacityMB)-w.CurrentMemoryReserved)
+		w.AvailableGPUCount = max(0, int64(w.GPUCount)-w.CurrentGPUReserved)
+		w.AvailableGPUMemoryMB = max(0, int64(w.GPUCount)*int64(w.GPUMemoryMB)-w.CurrentGPUMemoryReserved)
 		workers = append(workers, &w)
 	}
 	return workers, rows.Err()
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func durationMilliseconds(d time.Duration) int64 {

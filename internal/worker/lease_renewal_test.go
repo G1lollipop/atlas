@@ -85,11 +85,11 @@ func TestLeaseRenewalFailureCancelsHandlerAndSkipsLifecycleWrite(t *testing.T) {
 		t.Fatal("executeOne did not return after handler cancellation")
 	}
 
-	fs.fakeStore.mu.Lock()
-	defer fs.fakeStore.mu.Unlock()
-	if len(fs.fakeStore.completeRunCalls) != 0 || len(fs.fakeStore.failRunCalls) != 0 || len(fs.fakeStore.markDeadCalls) != 0 {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.completeRunCalls) != 0 || len(fs.failRunCalls) != 0 || len(fs.markDeadCalls) != 0 {
 		t.Fatalf("lifecycle writes after lease loss: complete=%d fail=%d dead=%d; want none",
-			len(fs.fakeStore.completeRunCalls), len(fs.fakeStore.failRunCalls), len(fs.fakeStore.markDeadCalls))
+			len(fs.completeRunCalls), len(fs.failRunCalls), len(fs.markDeadCalls))
 	}
 }
 
@@ -109,9 +109,9 @@ func TestHandlerTimeoutStillRecordsFailureWhenRenewalIsCanceled(t *testing.T) {
 	default:
 		t.Fatal("renewal was not in progress at handler timeout")
 	}
-	fs.fakeStore.mu.Lock()
-	defer fs.fakeStore.mu.Unlock()
-	if len(fs.fakeStore.failRunCalls) != 1 || !fs.fakeStore.failRunCalls[0].requeue {
-		t.Fatalf("timeout FailRun calls = %#v, want one scheduled retry", fs.fakeStore.failRunCalls)
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.failRunCalls) != 1 || !fs.failRunCalls[0].requeue {
+		t.Fatalf("timeout FailRun calls = %#v, want one scheduled retry", fs.failRunCalls)
 	}
 }

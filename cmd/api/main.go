@@ -92,7 +92,7 @@ func main() {
 	var requestLimiter api.RateLimiter
 	if cfg.RedisAddr != "" {
 		rateLimitRedis := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-		defer rateLimitRedis.Close()
+		defer func() { _ = rateLimitRedis.Close() }()
 		if err := rateLimitRedis.Ping(ctx).Err(); err != nil {
 			fatal("connect to Redis rate limiter", err)
 		}

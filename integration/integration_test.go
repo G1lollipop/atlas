@@ -220,6 +220,11 @@ func TestResourceAwareAssignmentsAndReservationRelease(t *testing.T) {
 	if err != nil || completed.AssignedWorkerID == nil || *completed.AssignedWorkerID != gpu16ID {
 		t.Fatalf("terminal run should retain assignment history: run=%+v error=%v", completed, err)
 	}
+	workers, err = st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("list workers after GPU completion: %v", err)
+	}
+	assertWorkerResources(t, workers, gpu16ID, 4000, 16*1024, 1, 16*1024)
 
 	// A retry clears placement, returns to queued, and must pass the scheduler again.
 	if err := st.FailRun(ctx, smallGPURun.ID, gpu8ID, runAttemptFor(t, ctx, st, smallGPURun.ID), "retry check", true, 0); err != nil {

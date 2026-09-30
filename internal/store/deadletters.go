@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/G1lollipop/atlas/internal/model"
 )
@@ -49,7 +50,7 @@ func (s *PostgresStore) ListDeadLetters(ctx context.Context, limit, offset int) 
 // RetryDeadLetter uses the primary and holds a row lock on the dead-letter entry while
 // changing both records. A competing retry or discard waits for this transaction and
 // then observes that the entry has already been removed.
-func (s *PostgresStore) RetryDeadLetter(ctx context.Context, id string) (*model.JobRun, error) {
+func (s *PostgresStore) RetryDeadLetter(ctx context.Context, id string) (out *model.JobRun, retErr error) {
 	parsedID, err := uuid.Parse(id)
 	if err != nil {
 		return nil, ErrNotFound
@@ -87,20 +88,33 @@ func (s *PostgresStore) RetryDeadLetter(ctx context.Context, id string) (*model.
 	if jobStatus == model.JobStatusCanceled {
 		return nil, ErrJobCanceled
 	}
-	if err := admitQueueWork(ctx, tx, s.queueLimits, queue, tenant, false); err != nil {
+	var runTraceparent, runTracestate string
+	if err := tx.QueryRow(ctx, `
+		SELECT traceparent, tracestate FROM job_runs WHERE id = $1 FOR UPDATE
+	`, runID).Scan(&runTraceparent, &runTracestate); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	opCtx, span := startStoredSpan(ctx, runTraceparent, runTracestate, "scheduler.RetryDeadLetter",
+		attribute.String("run.id", runID))
+	defer func() { finishTransitionSpan(span, retErr) }()
+	if err := admitQueueWork(opCtx, tx, s.queueLimits, queue, tenant, false); err != nil {
 		return nil, err
 	}
 
 	// Fields outside this SET list, including execution_key, retain their stored value.
-	run, err := scanRun(tx.QueryRow(ctx, `
+	traceparent, tracestate := persistedTraceContext(opCtx)
+	run, err := scanRun(tx.QueryRow(opCtx, `
 		UPDATE job_runs
 		SET status = 'queued', attempt = 0, scheduled_at = now(),
 	    leased_by = NULL, leased_at = NULL, lease_expires_at = NULL,
 	    assigned_worker_id = NULL, assigned_at = NULL, assignment_expires_at = NULL,
 	    started_at = NULL, finished_at = NULL, result = NULL, error = NULL,
-	    cancel_requested_at = NULL
+	    cancel_requested_at = NULL, traceparent = $2, tracestate = $3
 		WHERE id = $1 AND status = 'dead'
-		RETURNING `+runColumns, runID))
+		RETURNING `+runColumns, runID, traceparent, tracestate))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -108,14 +122,14 @@ func (s *PostgresStore) RetryDeadLetter(ctx context.Context, id string) (*model.
 		return nil, err
 	}
 
-	tag, err := tx.Exec(ctx, `DELETE FROM dead_letters WHERE id = $1`, parsedID)
+	tag, err := tx.Exec(opCtx, `DELETE FROM dead_letters WHERE id = $1`, parsedID)
 	if err != nil {
 		return nil, err
 	}
 	if tag.RowsAffected() != 1 {
 		return nil, ErrNotFound
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(opCtx); err != nil {
 		return nil, err
 	}
 	return run, nil

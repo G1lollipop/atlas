@@ -1,0 +1,50 @@
+# Apply only after KEDA is installed and the Prometheus serverAddress below is
+# reachable from the KEDA operator. These objects create KEDA-managed HPAs for
+# the two independent worker pools.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: atlas-worker-cpu
+spec:
+  scaleTargetRef:
+    name: atlas-worker-cpu
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  pollingInterval: 15
+  cooldownPeriod: 300
+  fallback:
+    failureThreshold: 3
+    replicas: 2
+    behavior: currentReplicasIfHigher
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        query: sum(max by (queue, resource_class) (atlas_job_queue_depth{resource_class="cpu"} and on (job, instance) (up == 1) and on (job, instance) (atlas_observability_up == 1)))
+        threshold: "8"
+        ignoreNullValues: "false"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: atlas-worker-gpu
+spec:
+  scaleTargetRef:
+    name: atlas-worker-gpu
+  minReplicaCount: 1
+  maxReplicaCount: 8
+  pollingInterval: 15
+  cooldownPeriod: 300
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+    behavior: currentReplicasIfHigher
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        query: sum(max by (queue, resource_class) (atlas_job_queue_depth{resource_class="gpu"} and on (job, instance) (up == 1) and on (job, instance) (atlas_observability_up == 1)))
+        threshold: "8"
+        ignoreNullValues: "false"

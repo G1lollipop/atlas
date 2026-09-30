@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atlas-worker-gpu
+  labels:
+    atlas.io/gpu-mode: hardware
+spec:
+  template:
+    metadata:
+      labels:
+        atlas.io/gpu-mode: hardware
+    spec:
+      nodeSelector:
+        atlas.io/accelerator: nvidia-l4
+      containers:
+        - name: worker
+          env:
+            - name: WORKER_GPU_TYPE
+              value: nvidia-l4
+            - name: WORKER_LABELS
+              value: '{"pool":"gpu","execution":"hardware","accelerator":"nvidia-l4"}'
+          resources:
+            limits:
+              nvidia.com/gpu: 1

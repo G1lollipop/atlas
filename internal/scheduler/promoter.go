@@ -164,12 +164,14 @@ func (p *Promoter) Run(ctx context.Context) error {
 
 			if isLeader {
 				metrics.IsLeader.Set(1)
+				decisionStartedAt := time.Now()
 				if _, err := p.PromoteOnce(ctx); err != nil {
 					p.Logger.Error("promote once failed", "error", err)
 				}
 				if _, err := p.DispatchOnce(ctx); err != nil {
 					p.Logger.Error("dispatch once failed", "error", err)
 				}
+				metrics.SchedulerDecisionSeconds.Observe(time.Since(decisionStartedAt).Seconds())
 			} else {
 				metrics.IsLeader.Set(0)
 			}

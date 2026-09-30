@@ -78,7 +78,7 @@ func TestRetryPolicyRejectsInvalidConfigurationAndRandomSamples(t *testing.T) {
 	if _, err := valid.Delay(0, nil); err == nil {
 		t.Fatal("Delay(0) unexpectedly succeeded")
 	}
-	if _, err := valid.Delay(1, func() float64 { return math.NaN() }); err == nil {
+	if _, err := valid.Delay(1, math.NaN); err == nil {
 		t.Fatal("NaN random sample unexpectedly succeeded")
 	}
 	if _, err := valid.Delay(1, func() float64 { return 1 }); err == nil {

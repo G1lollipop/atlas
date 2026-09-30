@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/G1lollipop/atlas/internal/config"
 	"github.com/G1lollipop/atlas/internal/lock"
 	"github.com/G1lollipop/atlas/internal/logger"
@@ -72,6 +74,11 @@ func main() {
 
 	if err := store.RunMigrations(ctx, st.Pool(), "migrations"); err != nil {
 		fatal("run migrations", err)
+	}
+	if err := prometheus.DefaultRegisterer.Register(metrics.NewObservabilityCollector(
+		st, metrics.DefaultObservabilityTimeout, scheduler.HeartbeatTTL,
+	)); err != nil {
+		fatal("register scheduler observability collector", err)
 	}
 
 	elector := lock.NewPostgresElector(st.Pool(), promotionLockKey)

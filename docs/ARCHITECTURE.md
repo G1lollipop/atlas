@@ -306,14 +306,11 @@ Jaeger's API (see [VERIFICATION.md](VERIFICATION.md)) — not just asserted from
 the code. `internal/worker/pool.go` (`executeOne`) and
 `internal/scheduler/promoter.go` (`PromoteOnce`) each get their own span too.
 
-**Limitation, stated plainly:** these traces are per-service, not linked into one
-end-to-end trace per job. A request's HTTP span and its DB query spans share a trace
-because they're the same process, same context — but the scheduler's later
-`PromoteOnce` span and the worker's later `executeOne` span for the *same job* start
-new, unrelated traces, because nothing today persists the originating trace ID on the
-job/run for the scheduler or worker to continue. Doing that (store a W3C traceparent
-on job creation, extract and continue it when promoting and when executing) is the
-real next step for a fully linked trace — not implemented here.
+The source baseline's limitation was a separate trace per service. Atlas now
+persists W3C trace context on jobs and runs and continues it through promotion,
+assignment, leasing, execution, and result persistence. The earlier Jaeger
+verification above describes the baseline; current behavior and validation are
+documented in [OBSERVABILITY.md](OBSERVABILITY.md).
 
 ## Known limitations / what's not built
 

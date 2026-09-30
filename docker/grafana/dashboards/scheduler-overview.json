@@ -1,0 +1,85 @@
+{
+  "id": null,
+  "uid": "atlas-scheduler-overview",
+  "title": "Scheduler Overview",
+  "tags": ["atlas", "scheduler"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Due queue depth by queue and resource class",
+      "description": "Scheduler replicas scrape the same database snapshot, so this panel takes the maximum per queue and class.",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max by (queue, resource_class) (atlas_job_queue_depth)", "legendFormat": "{{queue}} / {{resource_class}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total due backlog",
+      "description": "Computed from the per-queue gauges after collapsing duplicate scheduler replica scrapes.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(max by (queue, resource_class) (atlas_job_queue_depth))", "legendFormat": "due backlog" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Successful runs and failed attempts",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "C", "expr": "sum(rate(atlas_jobs_submitted_total[5m]))", "legendFormat": "submitted jobs / sec" },
+        { "refId": "A", "expr": "sum(rate(atlas_jobs_completed_total[5m]))", "legendFormat": "successful runs / sec" },
+        { "refId": "B", "expr": "sum(rate(atlas_jobs_failed_total[5m]))", "legendFormat": "failed attempts / sec" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Queue wait p95",
+      "description": "First one-shot attempts include API acceptance time; retries exclude backoff.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, resource_class) (rate(atlas_job_queue_wait_seconds_bucket[5m])))", "legendFormat": "{{resource_class}} p95" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Scheduler decision duration p95",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(atlas_scheduler_decision_seconds_bucket[5m])))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Scheduler database snapshot health",
+      "description": "A value of 0 means queue and worker gauges were omitted for that scrape.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bool", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "min(atlas_observability_up)", "legendFormat": "all scheduler snapshots healthy" }
+      ]
+    }
+  ]
+}

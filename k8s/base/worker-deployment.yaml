@@ -1,0 +1,155 @@
+# The default GPU pool models scheduler capacity only. It does not request an
+# NVIDIA device or make the built-in handlers execute GPU models. See
+# gpu-nvidia/ for the separate hardware-backed example.
+# Real deployments should replace the local :latest image names with immutable,
+# registry-qualified image references.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atlas-worker-cpu
+  labels:
+    app.kubernetes.io/name: atlas
+    app.kubernetes.io/component: worker
+    atlas.io/worker-pool: cpu
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: atlas-worker
+      atlas.io/worker-pool: cpu
+  template:
+    metadata:
+      labels:
+        app: atlas-worker
+        app.kubernetes.io/name: atlas
+        app.kubernetes.io/component: worker
+        atlas.io/worker-pool: cpu
+        atlas.io/gpu-mode: none
+    spec:
+      containers:
+        - name: worker
+          image: atlas-worker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: atlas-config
+            - secretRef:
+                name: atlas-secrets
+          env:
+            - name: WORKER_CPU_CAPACITY_MILLIS
+              value: "1000"
+            - name: WORKER_MEMORY_CAPACITY_MB
+              value: "1024"
+            - name: WORKER_GPU_COUNT
+              value: "0"
+            - name: WORKER_GPU_TYPE
+              value: ""
+            - name: WORKER_GPU_MEMORY_MB
+              value: "0"
+            - name: WORKER_LABELS
+              value: '{"pool":"cpu","execution":"cpu"}'
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+# This pod advertises demo GPU inventory so the scheduler can exercise
+# capability matching. Kubernetes does not allocate a device to this pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atlas-worker-gpu
+  labels:
+    app.kubernetes.io/name: atlas
+    app.kubernetes.io/component: worker
+    atlas.io/worker-pool: gpu
+    atlas.io/gpu-mode: simulated
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: atlas-worker
+      atlas.io/worker-pool: gpu
+  template:
+    metadata:
+      labels:
+        app: atlas-worker
+        app.kubernetes.io/name: atlas
+        app.kubernetes.io/component: worker
+        atlas.io/worker-pool: gpu
+        atlas.io/gpu-mode: simulated
+    spec:
+      containers:
+        - name: worker
+          image: atlas-worker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: atlas-config
+            - secretRef:
+                name: atlas-secrets
+          env:
+            - name: WORKER_CPU_CAPACITY_MILLIS
+              value: "2000"
+            - name: WORKER_MEMORY_CAPACITY_MB
+              value: "2048"
+            - name: WORKER_GPU_COUNT
+              value: "1"
+            - name: WORKER_GPU_TYPE
+              value: "simulated-nvidia-l4"
+            - name: WORKER_GPU_MEMORY_MB
+              value: "24576"
+            - name: WORKER_LABELS
+              value: '{"pool":"gpu","execution":"simulated","accelerator":"nvidia-l4"}'
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas-worker-cpu-metrics
+  labels:
+    app.kubernetes.io/name: atlas
+    app.kubernetes.io/component: worker
+    atlas.io/worker-pool: cpu
+spec:
+  type: ClusterIP
+  selector:
+    app: atlas-worker
+    atlas.io/worker-pool: cpu
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas-worker-gpu-metrics
+  labels:
+    app.kubernetes.io/name: atlas
+    app.kubernetes.io/component: worker
+    atlas.io/worker-pool: gpu
+spec:
+  type: ClusterIP
+  selector:
+    app: atlas-worker
+    atlas.io/worker-pool: gpu
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics

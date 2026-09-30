@@ -2,6 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: atlas-scheduler
+  labels:
+    app.kubernetes.io/name: atlas
+    app.kubernetes.io/component: scheduler
 spec:
   # Safe to run at 2 replicas because the scheduler uses leader election - only
   # the elected leader promotes, the rest sit as standbys. No HPA here: promotion
@@ -14,6 +17,8 @@ spec:
     metadata:
       labels:
         app: atlas-scheduler
+        app.kubernetes.io/name: atlas
+        app.kubernetes.io/component: scheduler
     spec:
       containers:
         - name: scheduler
@@ -36,3 +41,19 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas-scheduler-metrics
+  labels:
+    app.kubernetes.io/name: atlas
+    app.kubernetes.io/component: scheduler
+spec:
+  type: ClusterIP
+  selector:
+    app: atlas-scheduler
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics

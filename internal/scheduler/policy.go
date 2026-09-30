@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/G1lollipop/atlas/internal/metrics"
 	"github.com/G1lollipop/atlas/internal/model"
 	"github.com/G1lollipop/atlas/internal/store"
 )
@@ -73,6 +74,10 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 	reclaimed, err := d.Store.ReclaimExpiredLeases(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("scheduler: reclaim expired worker leases: %w", err)
+	}
+	if reclaimed > 0 {
+		metrics.LeasesReclaimed.Add(float64(reclaimed))
+		metrics.LeaseExpiredTotal.Add(float64(reclaimed))
 	}
 	expired, err := d.Store.RequeueExpiredAssignments(ctx)
 	if err != nil {

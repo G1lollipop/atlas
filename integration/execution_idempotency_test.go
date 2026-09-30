@@ -68,6 +68,9 @@ func TestExecutionKeySurvivesReclaimAndDeadLetterRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RetryDeadLetter: %v", err)
 	}
+	if retried == nil || retried.ID != run.ID || retried.ExecutionKey != run.ExecutionKey {
+		t.Fatalf("RetryDeadLetter returned run = %+v, want original run ID %s and execution key %s", retried, run.ID, run.ExecutionKey)
+	}
 
 	retried, err = st.GetRun(ctx, run.ID)
 	if err != nil {

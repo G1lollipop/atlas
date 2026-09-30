@@ -1,0 +1,80 @@
+{
+  "id": null,
+  "uid": "atlas-worker-fleet",
+  "title": "Worker Fleet",
+  "tags": ["atlas", "workers"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Worker heartbeat status",
+      "description": "0 means the database row is stale or marked dead; workers removed from the database disappear.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bool",
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Stale or dead", "color": "red" }, "1": { "text": "Alive", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "max by (worker_id) (atlas_worker_alive)", "legendFormat": "{{worker_id}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Reserved capacity ratio",
+      "description": "Ratio of database reservations to advertised worker capacity, not measured hardware utilization. Replica copies are collapsed per worker and resource.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max by (worker_id, resource) (atlas_worker_utilization)", "legendFormat": "{{worker_id}} / {{resource}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Reserved CPU (millicores)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max by (worker_id) (atlas_worker_cpu_reserved)", "legendFormat": "{{worker_id}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Reserved memory (MB)",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max by (worker_id) (atlas_worker_memory_reserved)", "legendFormat": "{{worker_id}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Reserved GPUs (count)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max by (worker_id) (atlas_worker_gpu_reserved)", "legendFormat": "{{worker_id}}" }
+      ]
+    }
+  ]
+}

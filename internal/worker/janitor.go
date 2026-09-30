@@ -44,6 +44,7 @@ func (p *Pool) janitorLoop(ctx context.Context) {
 			}
 			if n > 0 {
 				metrics.LeasesReclaimed.Add(float64(n))
+				metrics.LeaseExpiredTotal.Add(float64(n))
 				p.Logger.Warn("reclaimed expired leases", "count", n)
 			}
 		}

@@ -8,7 +8,7 @@
 // routes (see internal/api/auth.go, internal/api/router.go). This script reads the
 // token from the ATLAS_TOKEN environment variable rather than minting one itself,
 // since minting requires the deployment's JWT_SECRET (see docker-compose.yml /
-// k8s/secret.yaml), which this script has no business knowing. There is no CLI for
+// k8s/base/secret.yaml), which this script has no business knowing. There is no CLI for
 // this yet — internal/api/auth.go exposes a MintToken(secret, subject, ttl) helper
 // that a real run would call from a one-off `go run` snippet or a small added CLI
 // command (out of scope for this load test) to produce a JWT signed with the

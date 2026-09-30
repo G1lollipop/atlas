@@ -22,7 +22,7 @@ func validateKey(key string) error {
 			return fmt.Errorf("invalid artifact key")
 		}
 		for _, r := range part {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("-_.~", r)) {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune("-_.~", r) {
 				return fmt.Errorf("invalid artifact key")
 			}
 		}

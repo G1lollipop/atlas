@@ -43,6 +43,7 @@ func TestResourceAdmissionAllowsMultipleCPUJobsUpToCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second CPU reservation failed: %v", err)
 	}
+	assertReservations(t, admission, 4000, 4096, 0, 0)
 	if _, err := admission.tryAcquire(job); err == nil || !strings.Contains(err.Error(), "CPU request") {
 		t.Fatalf("third CPU reservation error = %v, want capacity rejection", err)
 	}
@@ -76,6 +77,7 @@ func TestResourceAdmissionBoundsGPUCountAndVRAM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("two-GPU reservation failed: %v", err)
 	}
+	assertReservations(t, admission, 0, 0, 2, 81920)
 	if _, err := admission.tryAcquire(&model.Job{RequiredGPUCount: 1, RequiredGPUMemoryMB: 1}); err == nil {
 		t.Fatal("GPU reservation exceeded the worker's two GPU slots")
 	}

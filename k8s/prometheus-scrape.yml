@@ -1,0 +1,21 @@
+# Merge this job into the Prometheus configuration used by the cluster.
+# The Prometheus service account needs get/list/watch access to Services,
+# Endpoints, and Pods in the Atlas namespace.
+scrape_configs:
+  - job_name: atlas-kubernetes
+    metrics_path: /metrics
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [default]
+    relabel_configs:
+      - action: keep
+        source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+        regex: atlas
+      - action: keep
+        source_labels: [__meta_kubernetes_endpoint_port_name]
+        regex: metrics
+      - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_component]
+        target_label: component
+      - source_labels: [__meta_kubernetes_service_label_atlas_io_worker_pool]
+        target_label: worker_pool

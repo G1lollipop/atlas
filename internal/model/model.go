@@ -49,6 +49,8 @@ type Job struct {
 	Status              JobStatus      `json:"status"`
 	IdempotencyKey      *string        `json:"idempotency_key,omitempty"`
 	DependsOn           []string       `json:"depends_on,omitempty"` // job IDs this job's runs must wait on
+	TraceParent         string         `json:"-"`                    // Server-managed W3C context; never accepted from API JSON.
+	TraceState          string         `json:"-"`
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }
@@ -74,6 +76,8 @@ type JobRun struct {
 	FinishedAt          *time.Time     `json:"finished_at,omitempty"`
 	Result              map[string]any `json:"result,omitempty"`
 	Error               *string        `json:"error,omitempty"`
+	TraceParent         string         `json:"-"` // Server-managed W3C context; never accepted from API JSON.
+	TraceState          string         `json:"-"`
 	CancelRequestedAt   *time.Time     `json:"cancel_requested_at,omitempty"`
 	CreatedAt           time.Time      `json:"created_at"`
 }

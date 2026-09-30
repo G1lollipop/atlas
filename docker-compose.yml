@@ -90,11 +90,10 @@ services:
       do sleep 2; done; mc mb --ignore-existing atlas/atlas-artifacts'
 
   jaeger:
-    # all-in-one accepts OTLP/HTTP natively on 4318 in recent images - no collector
-    # needed for a single-node/dev setup like this.
-    image: jaegertracing/all-in-one:latest
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.21.0
+    command: ["--config", "/etc/jaeger/config.yaml"]
+    volumes:
+      - ./docker/jaeger/config.yaml:/etc/jaeger/config.yaml:ro
     ports:
       - "16686:16686" # Jaeger UI
       - "4318:4318"   # OTLP/HTTP receiver

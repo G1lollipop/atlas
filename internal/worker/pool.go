@@ -21,9 +21,8 @@ import (
 	"github.com/G1lollipop/atlas/internal/metrics"
 	"github.com/G1lollipop/atlas/internal/model"
 	"github.com/G1lollipop/atlas/internal/store"
+	"github.com/G1lollipop/atlas/internal/tracing"
 )
-
-var tracer = otel.Tracer("atlas/worker")
 
 var errCancellationRequested = errors.New("durable run cancellation requested")
 
@@ -296,7 +295,8 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job) {
-	ctx, span := tracer.Start(ctx, "worker.executeOne", trace.WithAttributes(
+	ctx = tracing.ContextWithTraceContext(ctx, run.TraceParent, run.TraceState)
+	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.executeOne", trace.WithAttributes(
 		attribute.String("job.id", job.ID),
 		attribute.String("job.name", job.Name),
 		attribute.String("run.id", run.ID),
@@ -310,14 +310,16 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 
 	if !ok {
 		msg := "no handler registered for job: " + job.Name
-		if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, msg, false, 0); err != nil {
+		if err := p.persistFailure(ctx, run, msg, false, 0); err != nil {
 			p.Logger.Error("fail run failed", "run_id", run.ID, "error", err)
 			return
 		}
-		if err := p.Store.MarkDead(ctx, run.ID, "no handler"); err != nil {
+		metrics.JobsFailed.Inc()
+		if err := p.persistDeadLetter(ctx, run, "no handler"); err != nil {
 			p.Logger.Error("mark dead failed", "run_id", run.ID, "error", err)
 			return
 		}
+		metrics.DeadLetterTotal.Inc()
 		metrics.RunsCompleted.WithLabelValues("dead").Inc()
 		span.SetStatus(codes.Error, msg)
 		p.Logger.Error("job run dead: no handler registered",
@@ -346,15 +348,30 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 		return
 	}
 	metrics.RunsLeased.WithLabelValues(p.WorkerID).Inc()
+	metrics.JobQueueWaitSeconds.WithLabelValues(metrics.ResourceClass(job.RequiredGPUCount)).Observe(
+		metrics.QueueWaitDurationSeconds(job.CreatedAt, run.ScheduledAt, time.Now(), job.CronExpr == nil && run.Attempt == 1),
+	)
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(job.TimeoutSeconds)*time.Second)
 	defer cancel()
 	stopLeaseRenewal := p.startLeaseRenewal(runCtx, cancel, run.ID, run.Attempt)
 
 	start := time.Now()
-	result, err := h(runCtx, job, run)
+	handlerCtx, handlerSpan := otel.Tracer("atlas/worker").Start(runCtx, "worker.handler", trace.WithAttributes(
+		attribute.String("job.id", job.ID),
+		attribute.String("run.id", run.ID),
+		attribute.Int("run.attempt", int(run.Attempt)),
+	))
+	result, err := h(handlerCtx, job, run)
+	handlerErr := err
+	if handlerErr == nil && handlerCtx.Err() != nil {
+		handlerErr = handlerCtx.Err()
+	}
+	finishWorkerSpan(handlerSpan, handlerErr)
 	leaseErr := stopLeaseRenewal()
-	metrics.RunDuration.Observe(time.Since(start).Seconds())
+	executionSeconds := time.Since(start).Seconds()
+	metrics.RunDuration.Observe(executionSeconds)
+	metrics.JobExecutionSeconds.Observe(executionSeconds)
 	if errors.Is(leaseErr, errCancellationRequested) {
 		if cerr := p.Store.MarkCanceled(ctx, run.ID, p.WorkerID, run.Attempt); cerr != nil && !errors.Is(cerr, store.ErrNotFound) {
 			p.Logger.Error("acknowledge run cancellation failed", "run_id", run.ID, "error", cerr)
@@ -380,7 +397,7 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 	}
 
 	if err == nil {
-		if cerr := p.Store.CompleteRun(ctx, run.ID, p.WorkerID, run.Attempt, result); cerr != nil {
+		if cerr := p.persistResult(ctx, run, result); cerr != nil {
 			if errors.Is(cerr, store.ErrCanceled) {
 				p.recordCanceled(run)
 				return
@@ -391,12 +408,14 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 			return
 		}
 		metrics.RunsCompleted.WithLabelValues("succeeded").Inc()
+		metrics.JobsCompleted.Inc()
 		span.SetStatus(codes.Ok, "")
 		p.Logger.Info("job run succeeded", "run_id", run.ID, "job_id", job.ID, "job_name", job.Name)
 		return
 	}
 
 	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 
 	// run.Attempt already reflects this attempt (LeaseNextRun increments it),
 	// so comparing it directly to MaxAttempts tells us if another try remains.
@@ -407,7 +426,7 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 			p.Logger.Error("calculate retry delay failed; retrying immediately", "run_id", run.ID, "error", backoffErr)
 			backoff = 0
 		}
-		if ferr := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, err.Error(), true, backoff); ferr != nil {
+		if ferr := p.persistFailure(ctx, run, err.Error(), true, backoff); ferr != nil {
 			if errors.Is(ferr, store.ErrCanceled) {
 				p.recordCanceled(run)
 				return
@@ -416,6 +435,8 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 			return
 		}
 		metrics.RunsCompleted.WithLabelValues("failed").Inc()
+		metrics.JobsFailed.Inc()
+		metrics.RetryTotal.Inc()
 		p.Logger.Warn("job run failed, will retry",
 			"run_id", run.ID, "job_id", job.ID, "job_name", job.Name,
 			"attempt", run.Attempt, "max_attempts", maxAttempts,
@@ -423,7 +444,7 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 		return
 	}
 
-	if ferr := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, err.Error(), false, 0); ferr != nil {
+	if ferr := p.persistFailure(ctx, run, err.Error(), false, 0); ferr != nil {
 		if errors.Is(ferr, store.ErrCanceled) {
 			p.recordCanceled(run)
 			return
@@ -431,15 +452,58 @@ func (p *Pool) executeOne(ctx context.Context, run *model.JobRun, job *model.Job
 		p.Logger.Error("fail run failed", "run_id", run.ID, "error", ferr)
 		return
 	}
-	if derr := p.Store.MarkDead(ctx, run.ID, "max attempts exceeded"); derr != nil {
+	metrics.JobsFailed.Inc()
+	if derr := p.persistDeadLetter(ctx, run, "max attempts exceeded"); derr != nil {
 		p.Logger.Error("mark dead failed", "run_id", run.ID, "error", derr)
 		return
 	}
+	metrics.DeadLetterTotal.Inc()
 	metrics.RunsCompleted.WithLabelValues("dead").Inc()
 	span.SetStatus(codes.Error, err.Error())
 	p.Logger.Error("job run dead: max attempts exceeded",
 		"run_id", run.ID, "job_id", job.ID, "job_name", job.Name,
 		"attempt", run.Attempt, "max_attempts", maxAttempts, "error", err)
+}
+
+func (p *Pool) persistResult(ctx context.Context, run *model.JobRun, result map[string]any) error {
+	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.result.persist", trace.WithAttributes(
+		attribute.String("run.id", run.ID),
+		attribute.Int("run.attempt", int(run.Attempt)),
+	))
+	err := p.Store.CompleteRun(ctx, run.ID, p.WorkerID, run.Attempt, result)
+	finishWorkerSpan(span, err)
+	return err
+}
+
+func (p *Pool) persistFailure(ctx context.Context, run *model.JobRun, message string, requeue bool, backoff time.Duration) error {
+	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.failure.persist", trace.WithAttributes(
+		attribute.String("run.id", run.ID),
+		attribute.Int("run.attempt", int(run.Attempt)),
+		attribute.Bool("run.requeued", requeue),
+	))
+	err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, requeue, backoff)
+	finishWorkerSpan(span, err)
+	return err
+}
+
+func (p *Pool) persistDeadLetter(ctx context.Context, run *model.JobRun, reason string) error {
+	ctx, span := otel.Tracer("atlas/worker").Start(ctx, "worker.dead_letter.persist", trace.WithAttributes(
+		attribute.String("run.id", run.ID),
+		attribute.Int("run.attempt", int(run.Attempt)),
+	))
+	err := p.Store.MarkDead(ctx, run.ID, reason)
+	finishWorkerSpan(span, err)
+	return err
+}
+
+func finishWorkerSpan(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	span.End()
 }
 
 func (p *Pool) recordCanceled(run *model.JobRun) {
@@ -459,7 +523,7 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 			p.Logger.Error("calculate retry delay failed; retrying immediately", "run_id", run.ID, "error", backoffErr)
 			backoff = 0
 		}
-		if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, true, backoff); err != nil {
+		if err := p.persistFailure(ctx, run, message, true, backoff); err != nil {
 			if errors.Is(err, store.ErrCanceled) {
 				p.recordCanceled(run)
 				return
@@ -469,13 +533,15 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 			return
 		}
 		metrics.RunsCompleted.WithLabelValues("failed").Inc()
+		metrics.JobsFailed.Inc()
+		metrics.RetryTotal.Inc()
 		p.Logger.Error("run rejected by local resource admission; retrying",
 			"run_id", run.ID, "job_id", job.ID, "attempt", run.Attempt,
 			"max_attempts", maxAttempts, "error", admissionErr, "backoff", backoff)
 		return
 	}
 
-	if err := p.Store.FailRun(ctx, run.ID, p.WorkerID, run.Attempt, message, false, 0); err != nil {
+	if err := p.persistFailure(ctx, run, message, false, 0); err != nil {
 		if errors.Is(err, store.ErrCanceled) {
 			p.recordCanceled(run)
 			return
@@ -484,10 +550,12 @@ func (p *Pool) rejectResourceAdmission(ctx context.Context, run *model.JobRun, j
 			"run_id", run.ID, "admission_error", admissionErr, "error", err)
 		return
 	}
-	if err := p.Store.MarkDead(ctx, run.ID, "worker resource admission rejected after max attempts"); err != nil {
+	metrics.JobsFailed.Inc()
+	if err := p.persistDeadLetter(ctx, run, "worker resource admission rejected after max attempts"); err != nil {
 		p.Logger.Error("mark resource-rejected run dead failed", "run_id", run.ID, "error", err)
 		return
 	}
+	metrics.DeadLetterTotal.Inc()
 	metrics.RunsCompleted.WithLabelValues("dead").Inc()
 	p.Logger.Error("run rejected by local resource admission after max attempts",
 		"run_id", run.ID, "job_id", job.ID, "attempt", run.Attempt,
