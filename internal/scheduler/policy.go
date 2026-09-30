@@ -171,6 +171,34 @@ func (d *Dispatcher) assignScheduledRuns(ctx context.Context) (int, error) {
 
 func (d *Dispatcher) listScheduledCandidates(ctx context.Context) ([]*model.RunCandidate, error) {
 	candidates := make([]*model.RunCandidate, 0)
+	if pager, ok := d.Store.(store.ScheduledRunPager); ok {
+		var cursor *store.ScheduledRunCursor
+		for {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("scheduler: scan scheduled run pages: %w", err)
+			}
+			page, err := pager.ListScheduledRunsAfter(ctx, scheduledRunsLimit, cursor)
+			if err != nil {
+				return nil, fmt.Errorf("scheduler: list scheduled runs after cursor: %w", err)
+			}
+			candidates = append(candidates, page...)
+			if len(page) == 0 || len(page) < scheduledRunsLimit {
+				return candidates, nil
+			}
+			last := page[len(page)-1]
+			if last == nil || last.Run == nil {
+				return nil, fmt.Errorf("scheduler: scheduled run page ended with a missing run cursor")
+			}
+			cursor = &store.ScheduledRunCursor{
+				Priority:    last.Run.Priority,
+				ScheduledAt: last.Run.ScheduledAt,
+				CreatedAt:   last.Run.CreatedAt,
+				ID:          last.Run.ID,
+			}
+		}
+	}
+
+	// Compatibility for Store implementations that still expose only offset pages.
 	for offset := 0; ; {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("scheduler: scan scheduled run pages: %w", err)

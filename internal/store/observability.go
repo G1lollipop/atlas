@@ -91,7 +91,7 @@ func (s *PostgresStore) ObservabilitySnapshot(ctx context.Context, heartbeatTTL 
 	workerRetentionMillis := heartbeatTTLMillis * 10
 	workerRows, err := s.pool.Query(ctx, `
 		SELECT w.id,
-		       (w.status = 'alive' AND
+		       (w.status IN ('alive', 'draining') AND
 		       w.last_heartbeat_at > now() - ($1::bigint * INTERVAL '1 millisecond')) AS alive,
 		       w.cpu_capacity::bigint,
 		       w.memory_capacity_mb::bigint,
@@ -106,7 +106,7 @@ func (s *PostgresStore) ObservabilitySnapshot(ctx context.Context, heartbeatTTL 
 			       SUM(j.required_gpu_count)::bigint AS gpu_reserved
 			FROM job_runs r
 			JOIN jobs j ON j.id = r.job_id
-			WHERE w.status = 'alive'
+			WHERE w.status IN ('alive', 'draining')
 			AND w.last_heartbeat_at > now() - ($1::bigint * INTERVAL '1 millisecond')
 			  -- These are scheduler reservations until a reclaimer changes the row's status.
 			  AND ((r.status = 'assigned' AND r.assigned_worker_id = w.id)

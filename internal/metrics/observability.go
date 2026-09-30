@@ -54,7 +54,7 @@ func NewObservabilityCollector(source ObservabilitySource, timeout, heartbeatTTL
 			[]string{"queue", "resource_class"}, nil,
 		),
 		workerAliveDesc: prometheus.NewDesc(
-			"atlas_worker_alive", "1 if the worker heartbeat is current and its stored status is alive.",
+			"atlas_worker_alive", "1 if the worker heartbeat is current and its stored status is alive or draining.",
 			[]string{"worker_id"}, nil,
 		),
 		workerUtilizationDesc: prometheus.NewDesc(

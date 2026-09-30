@@ -433,6 +433,7 @@ func waitFor(timeout time.Duration, condition func() bool) bool {
 type failoverElector struct {
 	mu        sync.Mutex
 	calls     int
+	leader    bool
 	firstTry  chan struct{}
 	secondTry chan struct{}
 	grant     chan struct{}
@@ -468,4 +469,37 @@ func (e *failoverElector) TryAcquire(ctx context.Context) (bool, error) {
 	}
 }
 
-func (e *failoverElector) Release(context.Context) error { return nil }
+func (e *failoverElector) Campaign(ctx context.Context) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		isLeader, err := e.TryAcquire(ctx)
+		if err != nil {
+			return err
+		}
+		e.mu.Lock()
+		e.leader = isLeader
+		e.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			e.mu.Lock()
+			e.leader = false
+			e.mu.Unlock()
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *failoverElector) IsLeader() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.leader
+}
+
+func (e *failoverElector) Release(context.Context) error {
+	e.mu.Lock()
+	e.leader = false
+	e.mu.Unlock()
+	return nil
+}

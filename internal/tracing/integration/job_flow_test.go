@@ -217,6 +217,14 @@ func TestHTTPJobTraceFlowsThroughSchedulerAndWorker(t *testing.T) {
 	}
 	workerPollSpan.End()
 
+	workers, err = st.ListWorkers(ctx)
+	if err != nil || len(workers) != 1 || workers[0].ID != workerID {
+		t.Fatalf("list stopped integration worker: workers=%v err=%v", workers, err)
+	}
+	if workers[0].Status != model.WorkerStatusDraining {
+		t.Fatalf("stopped worker status = %q, want draining", workers[0].Status)
+	}
+
 	if completed.Result["handler_trace_id"] != requestRootSC.TraceID().String() {
 		t.Fatalf("handler trace ID = %v, want %s", completed.Result["handler_trace_id"], requestRootSC.TraceID())
 	}
@@ -261,7 +269,17 @@ func TestHTTPJobTraceFlowsThroughSchedulerAndWorker(t *testing.T) {
 		}
 	}
 
-	verifyRetryReclaimAndDeadLetterTrace(t, ctx, st, tracer, recorder, workerID)
+	// A stopped worker remains draining so active leases can finish and the
+	// scheduler cannot assign it new work. Use a fresh worker identity for the
+	// retry lifecycle below rather than reactivating the stopped identity.
+	retryWorkerID := "trace-retry-worker-" + uuid.NewString()
+	if err := st.UpsertWorkerHeartbeat(ctx, model.Worker{
+		ID: retryWorkerID, Hostname: "trace-retry-test", Status: model.WorkerStatusAlive,
+		CPUCapacity: 2, MemoryCapacityMB: 2048, StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("register retry worker: %v", err)
+	}
+	verifyRetryReclaimAndDeadLetterTrace(t, ctx, st, tracer, recorder, retryWorkerID)
 }
 
 func setupIntegrationTracer(t *testing.T) (trace.Tracer, *tracetest.SpanRecorder) {

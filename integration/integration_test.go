@@ -589,6 +589,187 @@ func TestScheduledRunListingIncludesAgedLowPriorityWork(t *testing.T) {
 	}
 }
 
+func TestPromoterKeysetPaginationPromotesEveryPage(t *testing.T) {
+	st, _ := openResourceTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	const jobs = 1001
+	if _, err := st.Pool().Exec(ctx, `
+		INSERT INTO jobs (name, status, created_at)
+		SELECT 'promoter-keyset-' || n::text, 'active', now() - INTERVAL '1 hour'
+		FROM generate_series(1, $1) AS n
+	`, jobs); err != nil {
+		t.Fatalf("insert active jobs: %v", err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	promoted, err := (&scheduler.Promoter{Store: st, Logger: log}).PromoteOnce(ctx)
+	if err != nil {
+		t.Fatalf("PromoteOnce: %v", err)
+	}
+	if promoted != jobs {
+		t.Fatalf("promoted %d jobs, want all %d across keyset pages", promoted, jobs)
+	}
+	var runs int
+	if err := st.Pool().QueryRow(ctx, `
+		SELECT count(*) FROM job_runs r JOIN jobs j ON j.id = r.job_id
+		WHERE j.name LIKE 'promoter-keyset-%'
+	`).Scan(&runs); err != nil {
+		t.Fatalf("count promoted runs: %v", err)
+	}
+	if runs != jobs {
+		t.Fatalf("created %d runs, want %d", runs, jobs)
+	}
+}
+
+func TestDispatcherKeysetPaginationFindsFeasibleRunAfterLargeIneligiblePage(t *testing.T) {
+	st, ctx := openResourceTestStore(t)
+	const ineligibleRuns = 1001
+	if _, err := st.Pool().Exec(ctx, `
+		WITH inserted_jobs AS (
+			INSERT INTO jobs (name, priority, required_gpu_count, required_gpu_memory_mb)
+			SELECT 'dispatcher-keyset-gpu-' || n::text, 10, 1, 4096
+			FROM generate_series(1, $1) AS n
+			RETURNING id, priority
+		)
+		INSERT INTO job_runs (job_id, status, priority, scheduled_at, created_at)
+		SELECT id, 'scheduled', priority, now() - INTERVAL '10 minutes', now() - INTERVAL '10 minutes'
+		FROM inserted_jobs
+	`, ineligibleRuns); err != nil {
+		t.Fatalf("insert ineligible scheduled runs: %v", err)
+	}
+	var cpuJobID, cpuRunID string
+	if err := st.Pool().QueryRow(ctx, `
+		INSERT INTO jobs (name, priority, required_cpu_millis, required_memory_mb)
+		VALUES ('dispatcher-keyset-cpu', 0, 1, 1) RETURNING id
+	`).Scan(&cpuJobID); err != nil {
+		t.Fatalf("insert CPU job: %v", err)
+	}
+	if err := st.Pool().QueryRow(ctx, `
+		INSERT INTO job_runs (job_id, status, priority, scheduled_at, created_at)
+		VALUES ($1, 'scheduled', 0, now() - INTERVAL '10 minutes', now() - INTERVAL '10 minutes')
+		RETURNING id
+	`, cpuJobID).Scan(&cpuRunID); err != nil {
+		t.Fatalf("insert CPU run: %v", err)
+	}
+	registerTestWorker(t, ctx, st, model.Worker{
+		ID: "dispatcher-keyset-worker", Hostname: "keyset-host",
+		CPUCapacity: 100, MemoryCapacityMB: 100,
+	})
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	assigned, err := scheduler.NewDispatcher(st, log).DispatchOnce(ctx)
+	if err != nil {
+		t.Fatalf("DispatchOnce: %v", err)
+	}
+	if assigned != 1 {
+		t.Fatalf("assigned %d runs, want the feasible run after %d GPU-only runs", assigned, ineligibleRuns)
+	}
+	assertRunAssignedTo(t, ctx, st, cpuRunID, "dispatcher-keyset-worker")
+	var remaining int
+	if err := st.Pool().QueryRow(ctx, `
+		SELECT count(*) FROM job_runs r JOIN jobs j ON j.id = r.job_id
+		WHERE j.name LIKE 'dispatcher-keyset-gpu-%' AND r.status = 'scheduled'
+	`).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining GPU-only runs: %v", err)
+	}
+	if remaining != ineligibleRuns {
+		t.Fatalf("remaining GPU-only scheduled runs = %d, want %d", remaining, ineligibleRuns)
+	}
+}
+
+func TestDrainingWorkerKeepsActiveLeaseButReceivesNoNewWork(t *testing.T) {
+	st, ctx := openResourceTestStore(t)
+	workerID := "draining-worker-" + uuid.NewString()
+	registerTestWorker(t, ctx, st, model.Worker{
+		ID: workerID, Hostname: "draining-host", CPUCapacity: 1000, MemoryCapacityMB: 2048,
+	})
+	cron := "* * * * *"
+	runningJob := createResourceTestJob(t, ctx, st, model.NewJobInput{
+		Name: "draining-running-" + uuid.NewString(), CronExpr: &cron,
+		RequiredCPUMillis: 250, RequiredMemoryMB: 512,
+	})
+	runningRun := createResourceTestRun(t, ctx, st, runningJob.ID, 1)
+	if _, err := st.Pool().Exec(ctx, `UPDATE job_runs SET status = 'assigned', assigned_worker_id = $1,
+		assigned_at = now(), assignment_expires_at = now() + INTERVAL '1 minute' WHERE id = $2`, workerID, runningRun.ID); err != nil {
+		t.Fatalf("assign running fixture: %v", err)
+	}
+	leasedRun, _, err := st.LeaseNextRun(ctx, workerID, time.Minute)
+	if err != nil || leasedRun == nil {
+		t.Fatalf("lease running fixture: run=%+v error=%v", leasedRun, err)
+	}
+	if err := st.MarkRunning(ctx, runningRun.ID, workerID, leasedRun.Attempt); err != nil {
+		t.Fatalf("mark fixture running: %v", err)
+	}
+
+	queuedJob := createResourceTestJob(t, ctx, st, model.NewJobInput{
+		Name: "draining-queued-" + uuid.NewString(), CronExpr: &cron,
+		RequiredCPUMillis: 100, RequiredMemoryMB: 128,
+	})
+	queuedRun := createResourceTestRun(t, ctx, st, queuedJob.ID, 1)
+	if _, err := st.Pool().Exec(ctx, `UPDATE job_runs SET status = 'scheduled' WHERE id = $1`, queuedRun.ID); err != nil {
+		t.Fatalf("schedule second fixture: %v", err)
+	}
+	if ok, err := st.AssignRun(ctx, queuedRun.ID, workerID, time.Minute, 30*time.Second); err != nil || !ok {
+		t.Fatalf("assign second fixture before drain: assigned=%v error=%v", ok, err)
+	}
+
+	workersBefore, err := st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("list worker before drain: %v", err)
+	}
+	var startedAt time.Time
+	for _, worker := range workersBefore {
+		if worker.ID == workerID {
+			startedAt = worker.StartedAt
+		}
+	}
+	if startedAt.IsZero() {
+		t.Fatal("worker started_at was not populated")
+	}
+	if err := st.UpsertWorkerHeartbeat(ctx, model.Worker{
+		ID: workerID, Hostname: "draining-host", Status: model.WorkerStatusDraining,
+		CPUCapacity: 1000, MemoryCapacityMB: 2048,
+	}); err != nil {
+		t.Fatalf("mark worker draining: %v", err)
+	}
+	workersAfter, err := st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("list worker after drain: %v", err)
+	}
+	var drainingWorker *model.Worker
+	for _, worker := range workersAfter {
+		if worker.ID == workerID {
+			drainingWorker = worker
+		}
+	}
+	if drainingWorker == nil || drainingWorker.Status != model.WorkerStatusDraining || !drainingWorker.StartedAt.Equal(startedAt) {
+		t.Fatalf("draining heartbeat did not persist status/started_at: %+v", drainingWorker)
+	}
+	if ok, err := st.AssignRun(ctx, queuedRun.ID, workerID, time.Minute, 30*time.Second); err != nil || ok {
+		t.Fatalf("draining worker accepted a new assignment: assigned=%v error=%v", ok, err)
+	}
+	if next, _, err := st.LeaseNextRun(ctx, workerID, time.Minute); err != nil || next != nil {
+		t.Fatalf("draining worker leased new work: run=%+v error=%v", next, err)
+	}
+	if err := st.ExtendLease(ctx, runningRun.ID, workerID, leasedRun.Attempt, time.Minute); err != nil {
+		t.Fatalf("active lease renewal failed during drain: %v", err)
+	}
+	snapshot, err := st.ObservabilitySnapshot(ctx, 30*time.Second)
+	if err != nil {
+		t.Fatalf("read draining worker snapshot: %v", err)
+	}
+	for _, worker := range snapshot.Workers {
+		if worker.WorkerID == workerID {
+			if !worker.Alive || worker.CPUReservedMillis != 350 || worker.MemoryReservedMB != 640 {
+				t.Fatalf("draining worker snapshot = %+v, want fresh status and both active reservations", worker)
+			}
+			return
+		}
+	}
+	t.Fatal("draining worker missing from observability snapshot")
+}
+
 func openResourceTestStore(t *testing.T) (*store.PostgresStore, context.Context) {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")

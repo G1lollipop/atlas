@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -47,6 +48,30 @@ func TestPromoteOnce_NoDepsNoPriorRun(t *testing.T) {
 	}
 	if runs[0].Status != model.RunStatusQueued {
 		t.Fatalf("newly promoted run status = %q, want queued", runs[0].Status)
+	}
+}
+
+func TestPromoteOnceKeysetPagesEveryActiveJob(t *testing.T) {
+	fs := newFakeStore()
+	for i := 0; i < activeJobsPageSize+1; i++ {
+		id := fmt.Sprintf("job-%05d", i)
+		fs.addJob(&model.Job{
+			ID: id, Name: id, Status: model.JobStatusActive,
+			CreatedAt: time.Now().Add(-time.Hour),
+		})
+	}
+
+	promoted, err := newPromoter(fs).PromoteOnce(context.Background())
+	if err != nil {
+		t.Fatalf("PromoteOnce() error = %v", err)
+	}
+	if promoted != activeJobsPageSize+1 {
+		t.Fatalf("promoted %d jobs, want all %d across two pages", promoted, activeJobsPageSize+1)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.runs) != activeJobsPageSize+1 {
+		t.Fatalf("created %d runs, want %d", len(fs.runs), activeJobsPageSize+1)
 	}
 }
 

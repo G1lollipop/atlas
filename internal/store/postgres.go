@@ -36,6 +36,8 @@ type PostgresStore struct {
 }
 
 var _ Store = (*PostgresStore)(nil)
+var _ ActiveJobPager = (*PostgresStore)(nil)
+var _ ScheduledRunPager = (*PostgresStore)(nil)
 
 // querier is satisfied by both *pgxpool.Pool and pgx.Tx, letting helpers run either
 // standalone or as part of a caller-managed transaction (e.g. LeaseNextRun, MarkDead).
@@ -352,6 +354,72 @@ func (s *PostgresStore) ListJobs(ctx context.Context, status *model.JobStatus, l
 	return jobs, nil
 }
 
+// ListActiveJobsAfter returns only active jobs that could be promoted. A job with
+// an active run is deferred, and a one-shot job with any prior run is terminal for
+// promotion purposes. UUID ordering and a strict cursor keep pages stable while
+// runs are created during the same promotion pass.
+func (s *PostgresStore) ListActiveJobsAfter(ctx context.Context, afterID string, limit int) ([]*model.Job, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	query := `
+		SELECT ` + jobColumns + `
+		FROM jobs j
+		WHERE j.status = 'active'
+		  AND (j.cron_expr IS NOT NULL OR NOT EXISTS (
+			SELECT 1 FROM job_runs prior WHERE prior.job_id = j.id
+		  ))
+		  AND NOT EXISTS (
+			SELECT 1 FROM job_runs active
+			WHERE active.job_id = j.id
+			  AND active.status IN ('queued', 'scheduled', 'assigned', 'leased', 'running')
+		  )
+	`
+	args := []any{limit}
+	if afterID != "" {
+		query += ` AND j.id > $1::uuid `
+		args = []any{afterID, limit}
+	}
+	limitParameter := "$1"
+	if afterID != "" {
+		limitParameter = "$2"
+	}
+	query += ` ORDER BY j.id LIMIT ` + limitParameter
+	rows, err := s.readPool().Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := make([]*model.Job, 0)
+	for rows.Next() {
+		var job model.Job
+		var payloadRaw []byte
+		if err := rows.Scan(&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
+			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount, &job.RequiredGPUMemoryMB,
+			&job.RequiredAccelerator, &job.MaxAttempts, &job.TimeoutSeconds, &job.Status, &job.IdempotencyKey,
+			&job.TraceParent, &job.TraceState, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payloadRaw, &job.Payload); err != nil {
+			return nil, fmt.Errorf("unmarshal payload: %w", err)
+		}
+		jobs = append(jobs, &job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, job := range jobs {
+		deps, err := fetchDependencies(ctx, s.readPool(), job.ID)
+		if err != nil {
+			return nil, err
+		}
+		job.DependsOn = deps
+	}
+	return jobs, nil
+}
+
 func (s *PostgresStore) UpdateJobStatus(ctx context.Context, id string, status model.JobStatus) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE jobs
@@ -522,6 +590,80 @@ func (s *PostgresStore) ListScheduledRuns(ctx context.Context, limit, offset int
 		         r.scheduled_at ASC, r.created_at ASC, r.id ASC
 		LIMIT $1 OFFSET $2
 	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make([]*model.RunCandidate, 0)
+	for rows.Next() {
+		var run model.JobRun
+		var job model.Job
+		var resultRaw, payloadRaw []byte
+		if err := rows.Scan(&run.ID, &run.ExecutionKey, &run.JobID, &run.Status, &run.Attempt, &run.Priority,
+			&run.ScheduledAt, &run.LeasedBy, &run.LeasedAt, &run.LeaseExpiresAt,
+			&run.AssignedWorkerID, &run.AssignedAt, &run.AssignmentExpiresAt,
+			&run.StartedAt, &run.FinishedAt, &resultRaw, &run.Error, &run.TraceParent, &run.TraceState, &run.CancelRequestedAt, &run.CreatedAt,
+			&job.ID, &job.Name, &payloadRaw, &job.CronExpr, &job.Priority, &job.WorkloadType, &job.Queue, &job.TenantID,
+			&job.RequiredCPUMillis, &job.RequiredMemoryMB, &job.RequiredGPUCount,
+			&job.RequiredGPUMemoryMB, &job.RequiredAccelerator, &job.MaxAttempts,
+			&job.TimeoutSeconds, &job.Status, &job.IdempotencyKey, &job.TraceParent, &job.TraceState, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if resultRaw != nil {
+			if err := json.Unmarshal(resultRaw, &run.Result); err != nil {
+				return nil, fmt.Errorf("unmarshal result: %w", err)
+			}
+		}
+		if err := json.Unmarshal(payloadRaw, &job.Payload); err != nil {
+			return nil, fmt.Errorf("unmarshal payload: %w", err)
+		}
+		candidates = append(candidates, &model.RunCandidate{Run: &run, Job: &job})
+	}
+	return candidates, rows.Err()
+}
+
+// ListScheduledRunsAfter returns a keyset page using the dispatcher's complete
+// priority-plus-age ordering. The cursor uses the same database expression for
+// rank comparison, then scheduled_at, created_at, and id as stable tie breakers.
+func (s *PostgresStore) ListScheduledRunsAfter(ctx context.Context, limit int, after *ScheduledRunCursor) ([]*model.RunCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `
+		SELECT r.id, r.execution_key, r.job_id, r.status, r.attempt, r.priority, r.scheduled_at,
+		       r.leased_by, r.leased_at, r.lease_expires_at, r.assigned_worker_id,
+		       r.assigned_at, r.assignment_expires_at, r.started_at, r.finished_at,
+		       r.result, r.error, r.traceparent, r.tracestate, r.cancel_requested_at, r.created_at,
+		       j.id, j.name, j.payload, j.cron_expr, j.priority, j.workload_type, j.queue, j.tenant_id,
+		       j.required_cpu_millis, j.required_memory_mb, j.required_gpu_count,
+		       j.required_gpu_memory_mb, j.required_accelerator, j.max_attempts,
+		       j.timeout_seconds, j.status, j.idempotency_key, j.traceparent, j.tracestate, j.created_at, j.updated_at
+		FROM job_runs r
+		JOIN jobs j ON j.id = r.job_id
+		WHERE r.status = 'scheduled' AND r.scheduled_at <= now()
+	`
+	args := []any{limit}
+	if after != nil {
+		query += `
+		  AND (
+			((r.priority::bigint * 3600) - EXTRACT(EPOCH FROM r.scheduled_at)) <
+			 (( $2::bigint * 3600) - EXTRACT(EPOCH FROM $3::timestamptz))
+			 OR (
+				((r.priority::bigint * 3600) - EXTRACT(EPOCH FROM r.scheduled_at)) =
+				 (( $2::bigint * 3600) - EXTRACT(EPOCH FROM $3::timestamptz))
+				 AND (r.scheduled_at, r.created_at, r.id) > ($3::timestamptz, $4::timestamptz, $5::uuid)
+			 )
+		  )
+		`
+		args = []any{limit, after.Priority, after.ScheduledAt, after.CreatedAt, after.ID}
+	}
+	query += `
+		ORDER BY ((r.priority::bigint * 3600) - EXTRACT(EPOCH FROM r.scheduled_at)) DESC,
+		         r.scheduled_at ASC, r.created_at ASC, r.id ASC
+		LIMIT $1
+	`
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1019,6 +1161,10 @@ func (s *PostgresStore) CountPendingRuns(ctx context.Context) (int, error) {
 }
 
 func (s *PostgresStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.Worker) error {
+	status := worker.Status
+	if status == "" {
+		status = model.WorkerStatusAlive
+	}
 	labels, err := json.Marshal(worker.Labels)
 	if err != nil {
 		return fmt.Errorf("marshal worker labels: %w", err)
@@ -1031,10 +1177,10 @@ func (s *PostgresStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.
 			id, hostname, status, last_heartbeat_at, cpu_capacity, memory_capacity_mb,
 			gpu_count, gpu_type, gpu_memory_mb, labels
 		)
-		VALUES ($1, $2, 'alive', now(), $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
 			hostname = EXCLUDED.hostname,
-			status = 'alive',
+			status = EXCLUDED.status,
 			last_heartbeat_at = now(),
 			cpu_capacity = EXCLUDED.cpu_capacity,
 			memory_capacity_mb = EXCLUDED.memory_capacity_mb,
@@ -1042,7 +1188,7 @@ func (s *PostgresStore) UpsertWorkerHeartbeat(ctx context.Context, worker model.
 			gpu_type = EXCLUDED.gpu_type,
 			gpu_memory_mb = EXCLUDED.gpu_memory_mb,
 			labels = EXCLUDED.labels
-	`, worker.ID, worker.Hostname, worker.CPUCapacity, worker.MemoryCapacityMB,
+	`, worker.ID, worker.Hostname, status, worker.CPUCapacity, worker.MemoryCapacityMB,
 		worker.GPUCount, worker.GPUType, worker.GPUMemoryMB, labels)
 	return err
 }

@@ -18,25 +18,23 @@ import (
 
 var tracer = otel.Tracer("atlas/scheduler")
 
-// listActiveJobsLimit bounds the single ListJobs page the promoter scans per pass.
-// A real deployment with more active jobs than this would silently stop promoting
-// the overflow; the correct fix is paginating through ListJobs here, but that's out
-// of scope for this MVP.
-const listActiveJobsLimit = 10000
+// activeJobsPageSize bounds each keyset page without capping the number of active
+// jobs visited in a promotion cycle.
+const activeJobsPageSize = 1000
 
 // Promoter is the leader-only loop that turns due, dependency-satisfied jobs into
 // queued job_runs and dispatches scheduled runs to compatible workers. Only one
 // replica's Promoter should be actively promoting at a time; Elector enforces that.
 type Promoter struct {
 	Store    store.Store
-	Elector  lock.Elector
+	Elector  lock.LeaderElector
 	Logger   *slog.Logger
 	Interval time.Duration
 	Policy   SchedulingPolicy
 }
 
 // NewPromoter constructs a Promoter ready to Run.
-func NewPromoter(st store.Store, el lock.Elector, log *slog.Logger, interval time.Duration) *Promoter {
+func NewPromoter(st store.Store, el lock.LeaderElector, log *slog.Logger, interval time.Duration) *Promoter {
 	return &Promoter{
 		Store:    st,
 		Elector:  el,
@@ -52,75 +50,66 @@ func (p *Promoter) PromoteOnce(ctx context.Context) (int, error) {
 	ctx, span := tracer.Start(ctx, "scheduler.PromoteOnce")
 	defer span.End()
 
-	activeStatus := model.JobStatusActive
-	jobs, err := p.Store.ListJobs(ctx, &activeStatus, listActiveJobsLimit, 0)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return 0, err
-	}
-
 	promoted := 0
 	now := time.Now()
-
-	for _, job := range jobs {
-		hasActive, err := p.Store.HasActiveRun(ctx, job.ID)
-		if err != nil {
-			p.Logger.Error("check active run failed", "job_id", job.ID, "error", err)
-			continue
-		}
-		if hasActive {
-			continue
-		}
-
-		var lastScheduledAt *time.Time
-		lastRun, err := p.Store.LatestRunForJob(ctx, job.ID)
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			lastScheduledAt = nil
-		case err != nil:
-			p.Logger.Error("latest run lookup failed", "job_id", job.ID, "error", err)
-			continue
-		default:
-			lastScheduledAt = &lastRun.ScheduledAt
-		}
-
-		due, err := NextRunDue(job.CronExpr, lastScheduledAt, job.CreatedAt, now)
-		if err != nil {
-			p.Logger.Error("next run due check failed", "job_id", job.ID, "error", err)
-			continue
-		}
-		if !due {
-			continue
-		}
-
-		satisfied, err := DependenciesSatisfied(ctx, p.Store, job.ID)
-		if err != nil {
-			p.Logger.Error("dependency check failed", "job_id", job.ID, "error", err)
-			continue
-		}
-		if !satisfied {
-			continue
-		}
-
-		if _, err := p.Store.CreateRun(ctx, job.ID, job.Priority, now); err != nil {
-			if errors.Is(err, store.ErrRunAlreadyExists) {
-				continue
+	if pager, ok := p.Store.(store.ActiveJobPager); ok {
+		afterID := ""
+		for {
+			if err := ctx.Err(); err != nil {
+				return promoted, err
 			}
-			if errors.Is(err, store.ErrQueueCapacityExceeded) {
-				var capacityErr *store.QueueCapacityError
-				p.Logger.Warn("job promotion deferred by queue backpressure", "job_id", job.ID, "error", err)
-				if errors.As(err, &capacityErr) && capacityErr.Dimension == "global backlog" {
+			jobs, err := pager.ListActiveJobsAfter(ctx, afterID, activeJobsPageSize)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return promoted, err
+			}
+			if len(jobs) == 0 {
+				break
+			}
+			stop := false
+			for _, job := range jobs {
+				created, hitGlobalLimit := p.promoteJob(ctx, job, now, true)
+				if created {
+					promoted++
+				}
+				if hitGlobalLimit {
+					stop = true
 					break
 				}
-				continue
 			}
-			p.Logger.Error("create run failed", "job_id", job.ID, "error", err)
-			continue
+			afterID = jobs[len(jobs)-1].ID
+			if stop || len(jobs) < activeJobsPageSize {
+				break
+			}
 		}
-
-		promoted++
-		p.Logger.Info("promoted job", "job_id", job.ID, "name", job.Name)
+	} else {
+		// Keep compatibility with Store implementations that predate keyset paging.
+		// Production PostgresStore implements ActiveJobPager and avoids OFFSET scans.
+		activeStatus := model.JobStatusActive
+		for offset := 0; ; {
+			jobs, err := p.Store.ListJobs(ctx, &activeStatus, activeJobsPageSize, offset)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+				return promoted, err
+			}
+			stop := false
+			for _, job := range jobs {
+				created, hitGlobalLimit := p.promoteJob(ctx, job, now, false)
+				if created {
+					promoted++
+				}
+				if hitGlobalLimit {
+					stop = true
+					break
+				}
+			}
+			offset += len(jobs)
+			if stop || len(jobs) < activeJobsPageSize {
+				break
+			}
+		}
 	}
 
 	if depth, err := p.Store.CountPendingRuns(ctx); err != nil {
@@ -133,6 +122,72 @@ func (p *Promoter) PromoteOnce(ctx context.Context) (int, error) {
 	return promoted, nil
 }
 
+// promoteJob checks a single job and creates its next run when due. eligibleOnly
+// means the keyset query has already excluded active runs and completed one-shots.
+func (p *Promoter) promoteJob(ctx context.Context, job *model.Job, now time.Time, eligibleOnly bool) (created, hitGlobalLimit bool) {
+	if job == nil {
+		return false, false
+	}
+	if !eligibleOnly {
+		hasActive, err := p.Store.HasActiveRun(ctx, job.ID)
+		if err != nil {
+			p.Logger.Error("check active run failed", "job_id", job.ID, "error", err)
+			return false, false
+		}
+		if hasActive {
+			return false, false
+		}
+	}
+
+	var lastScheduledAt *time.Time
+	if !eligibleOnly || job.CronExpr != nil {
+		lastRun, err := p.Store.LatestRunForJob(ctx, job.ID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			lastScheduledAt = nil
+		case err != nil:
+			p.Logger.Error("latest run lookup failed", "job_id", job.ID, "error", err)
+			return false, false
+		default:
+			lastScheduledAt = &lastRun.ScheduledAt
+		}
+	}
+
+	due, err := NextRunDue(job.CronExpr, lastScheduledAt, job.CreatedAt, now)
+	if err != nil {
+		p.Logger.Error("next run due check failed", "job_id", job.ID, "error", err)
+		return false, false
+	}
+	if !due {
+		return false, false
+	}
+
+	satisfied, err := DependenciesSatisfied(ctx, p.Store, job.ID)
+	if err != nil {
+		p.Logger.Error("dependency check failed", "job_id", job.ID, "error", err)
+		return false, false
+	}
+	if !satisfied {
+		return false, false
+	}
+
+	if _, err := p.Store.CreateRun(ctx, job.ID, job.Priority, now); err != nil {
+		if errors.Is(err, store.ErrRunAlreadyExists) {
+			return false, false
+		}
+		if errors.Is(err, store.ErrQueueCapacityExceeded) {
+			var capacityErr *store.QueueCapacityError
+			p.Logger.Warn("job promotion deferred by queue backpressure", "job_id", job.ID, "error", err)
+			return false, errors.As(err, &capacityErr) && capacityErr.Dimension == "global backlog"
+		}
+		p.Logger.Error("create run failed", "job_id", job.ID, "error", err)
+		return false, false
+	}
+
+	p.Logger.Info("promoted job", "job_id", job.ID, "name", job.Name)
+	return true, false
+}
+
 // DispatchOnce recovers expired ownership, schedules queued runs, and assigns work
 // to compatible workers. Run invokes it only while this replica holds leadership.
 func (p *Promoter) DispatchOnce(ctx context.Context) (int, error) {
@@ -143,26 +198,54 @@ func (p *Promoter) DispatchOnce(ctx context.Context) (int, error) {
 // re-checked on every tick because leadership can change hands at any time, for
 // example if this replica's advisory-lock connection drops.
 func (p *Promoter) Run(ctx context.Context) error {
-	ticker := time.NewTicker(p.Interval)
+	if p.Elector == nil {
+		return errors.New("scheduler: promoter elector is nil")
+	}
+	interval := p.Interval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	campaignCtx, cancelCampaign := context.WithCancel(ctx)
+	defer cancelCampaign()
+	campaignDone := make(chan error, 1)
+	startCampaign := func() {
+		go func() { campaignDone <- p.Elector.Campaign(campaignCtx) }()
+	}
+	startCampaign()
 
 	for {
 		select {
 		case <-ctx.Done():
-			if err := p.Elector.Release(ctx); err != nil {
+			cancelCampaign()
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer releaseCancel()
+			if err := p.Elector.Release(releaseCtx); err != nil {
 				p.Logger.Warn("release leadership failed", "error", err)
 			}
 			return ctx.Err()
 
-		case <-ticker.C:
-			isLeader, err := p.Elector.TryAcquire(ctx)
-			if err != nil {
-				p.Logger.Error("leader election attempt failed", "error", err)
-				metrics.IsLeader.Set(0)
+		case err := <-campaignDone:
+			if ctx.Err() != nil {
 				continue
 			}
+			metrics.IsLeader.Set(0)
+			if err != nil {
+				p.Logger.Error("leader campaign stopped", "error", err)
+			} else {
+				p.Logger.Warn("leader campaign stopped unexpectedly")
+			}
+			retry := time.NewTimer(interval)
+			select {
+			case <-ctx.Done():
+				retry.Stop()
+			case <-retry.C:
+				startCampaign()
+			}
 
-			if isLeader {
+		case <-ticker.C:
+			if p.Elector.IsLeader() {
 				metrics.IsLeader.Set(1)
 				decisionStartedAt := time.Now()
 				if _, err := p.PromoteOnce(ctx); err != nil {

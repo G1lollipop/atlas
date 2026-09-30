@@ -119,3 +119,25 @@ type Store interface {
 
 	Close()
 }
+
+// ActiveJobPager pages active jobs eligible for promotion in ascending UUID order.
+// The Postgres implementation excludes jobs with an active run and completed
+// one-shot jobs so a promoter does not rescan their full history every cycle.
+type ActiveJobPager interface {
+	ListActiveJobsAfter(ctx context.Context, afterID string, limit int) ([]*model.Job, error)
+}
+
+// ScheduledRunCursor is the last row returned from a scheduled-run page. It
+// captures every ORDER BY key so concurrent changes cannot shift later pages.
+type ScheduledRunCursor struct {
+	Priority    int16
+	ScheduledAt time.Time
+	CreatedAt   time.Time
+	ID          string
+}
+
+// ScheduledRunPager pages due scheduled runs in the same priority-plus-age order
+// used by the dispatcher, without increasing OFFSET scans on large backlogs.
+type ScheduledRunPager interface {
+	ListScheduledRunsAfter(ctx context.Context, limit int, after *ScheduledRunCursor) ([]*model.RunCandidate, error)
+}

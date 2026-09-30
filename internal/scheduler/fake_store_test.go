@@ -123,6 +123,40 @@ func (f *fakeStore) ListJobs(ctx context.Context, status *model.JobStatus, limit
 	return out, nil
 }
 
+func (f *fakeStore) ListActiveJobsAfter(ctx context.Context, afterID string, limit int) ([]*model.Job, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 {
+		limit = activeJobsPageSize
+	}
+	jobs := make([]*model.Job, 0)
+	for _, job := range f.jobs {
+		if job.Status != model.JobStatusActive || job.ID <= afterID {
+			continue
+		}
+		hasAnyRun, hasActiveRun := false, false
+		for _, run := range f.runs {
+			if run.JobID != job.ID {
+				continue
+			}
+			hasAnyRun = true
+			switch run.Status {
+			case model.RunStatusQueued, model.RunStatusScheduled, model.RunStatusAssigned, model.RunStatusLeased, model.RunStatusRunning:
+				hasActiveRun = true
+			}
+		}
+		if hasActiveRun || (job.CronExpr == nil && hasAnyRun) {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].ID < jobs[j].ID })
+	if len(jobs) > limit {
+		jobs = jobs[:limit]
+	}
+	return jobs, nil
+}
+
 func (f *fakeStore) UpdateJobStatus(ctx context.Context, id string, status model.JobStatus) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -259,18 +293,7 @@ func (f *fakeStore) ListScheduledRuns(ctx context.Context, limit, offset int) ([
 		}
 		candidates = append(candidates, &model.RunCandidate{Run: run, Job: job})
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Run.Priority != candidates[j].Run.Priority {
-			return candidates[i].Run.Priority > candidates[j].Run.Priority
-		}
-		if !candidates[i].Run.ScheduledAt.Equal(candidates[j].Run.ScheduledAt) {
-			return candidates[i].Run.ScheduledAt.Before(candidates[j].Run.ScheduledAt)
-		}
-		if !candidates[i].Run.CreatedAt.Equal(candidates[j].Run.CreatedAt) {
-			return candidates[i].Run.CreatedAt.Before(candidates[j].Run.CreatedAt)
-		}
-		return candidates[i].Run.ID < candidates[j].Run.ID
-	})
+	sort.Slice(candidates, func(i, j int) bool { return scheduledCandidateBefore(candidates[i], candidates[j]) })
 	if offset >= len(candidates) {
 		return []*model.RunCandidate{}, nil
 	}
@@ -279,6 +302,58 @@ func (f *fakeStore) ListScheduledRuns(ctx context.Context, limit, offset int) ([
 		candidates = candidates[:limit]
 	}
 	return candidates, nil
+}
+
+func (f *fakeStore) ListScheduledRunsAfter(ctx context.Context, limit int, after *store.ScheduledRunCursor) ([]*model.RunCandidate, error) {
+	candidates, err := f.ListScheduledRuns(ctx, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = scheduledRunsLimit
+	}
+	page := make([]*model.RunCandidate, 0, limit)
+	for _, candidate := range candidates {
+		if after != nil && !scheduledCandidateAfter(candidate, after) {
+			continue
+		}
+		page = append(page, candidate)
+		if len(page) == limit {
+			break
+		}
+	}
+	return page, nil
+}
+
+func scheduledCandidateBefore(a, b *model.RunCandidate) bool {
+	score := func(candidate *model.RunCandidate) float64 {
+		return float64(candidate.Run.Priority)*3600 - float64(candidate.Run.ScheduledAt.UnixNano())/1e9
+	}
+	if score(a) != score(b) {
+		return score(a) > score(b)
+	}
+	if !a.Run.ScheduledAt.Equal(b.Run.ScheduledAt) {
+		return a.Run.ScheduledAt.Before(b.Run.ScheduledAt)
+	}
+	if !a.Run.CreatedAt.Equal(b.Run.CreatedAt) {
+		return a.Run.CreatedAt.Before(b.Run.CreatedAt)
+	}
+	return a.Run.ID < b.Run.ID
+}
+
+func scheduledCandidateAfter(candidate *model.RunCandidate, cursor *store.ScheduledRunCursor) bool {
+	score := float64(candidate.Run.Priority)*3600 - float64(candidate.Run.ScheduledAt.UnixNano())/1e9
+	cursorScore := float64(cursor.Priority)*3600 - float64(cursor.ScheduledAt.UnixNano())/1e9
+	if score != cursorScore {
+		return score < cursorScore
+	}
+	if !candidate.Run.ScheduledAt.Equal(cursor.ScheduledAt) {
+		return candidate.Run.ScheduledAt.After(cursor.ScheduledAt)
+	}
+	if !candidate.Run.CreatedAt.Equal(cursor.CreatedAt) {
+		return candidate.Run.CreatedAt.After(cursor.CreatedAt)
+	}
+	return candidate.Run.ID > cursor.ID
 }
 
 func (f *fakeStore) AssignRun(ctx context.Context, runID, workerID string, assignmentTTL, heartbeatTTL time.Duration) (bool, error) {

@@ -92,8 +92,9 @@ type RunCandidate struct {
 type WorkerStatus string
 
 const (
-	WorkerStatusAlive WorkerStatus = "alive"
-	WorkerStatusDead  WorkerStatus = "dead"
+	WorkerStatusAlive    WorkerStatus = "alive"
+	WorkerStatusDraining WorkerStatus = "draining"
+	WorkerStatusDead     WorkerStatus = "dead"
 )
 
 type Worker struct {

@@ -16,7 +16,8 @@ type QueueDepthSnapshot struct {
 }
 
 // WorkerReservationSnapshot records current reserved capacity alongside the
-// worker's advertised capacity. Reservations are zeroed when the heartbeat is stale.
+// worker's advertised capacity. Fresh alive and draining workers retain active
+// reservations; stale or dead workers do not.
 type WorkerReservationSnapshot struct {
 	WorkerID          string
 	Alive             bool
