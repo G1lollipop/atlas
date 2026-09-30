@@ -1,0 +1,1074 @@
+{
+  "aggregates": {
+    "cpu_offered_load": {
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":16}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 16
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.8370926633957286,
+            "median": 0.8102101207322111,
+            "minimum": 0.8100427992973621
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 388.4334473629783,
+            "median": 382.8256423444852,
+            "minimum": 371.2441085044957
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.2916666666666667,
+            "median": 0.1728937728937729,
+            "minimum": 0.13333333333333333
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 97.59199796364537,
+            "median": 97.24798185744763,
+            "minimum": 93.46349289065782
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":1}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 1
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.12165109598078533,
+            "median": 0.11749989579330382,
+            "minimum": 0.11660326409044519
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 416.22464880760833,
+            "median": 415.593101372288,
+            "minimum": 380.5341133179953
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.061224489795918366,
+            "median": 0.05319148936170213,
+            "minimum": 0.036458333333333336
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 25.16137563620186,
+            "median": 24.95160834550466,
+            "minimum": 24.610744514196117
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":2}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 2
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.2042633424257905,
+            "median": 0.19173931618667783,
+            "minimum": 0.18857487391862965
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 425.92102546790517,
+            "median": 423.40457834681354,
+            "minimum": 411.65524433138376
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.09523809523809523,
+            "median": 0.0880952380952381,
+            "minimum": 0.07758620689655173
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 42.81593200879321,
+            "median": 42.66720775209438,
+            "minimum": 42.19390240254005
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":4}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 4
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.33324627502712206,
+            "median": 0.31107716246768313,
+            "minimum": 0.30312069153410803
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 429.98709042591963,
+            "median": 414.6380889766125,
+            "minimum": 410.96518343240547
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.1298245614035088,
+            "median": 0.11666666666666667,
+            "minimum": 0.06944444444444445
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 66.19102259694748,
+            "median": 65.22816284209897,
+            "minimum": 64.86535405482151
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.5484113318178813,
+            "median": 0.5201494217387438,
+            "minimum": 0.5199304731829285
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 418.7620612895798,
+            "median": 394.2321373047352,
+            "minimum": 381.73922329367855
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.20238095238095236,
+            "median": 0.17948717948717946,
+            "minimum": 0.17346938775510207
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 90.3879224747465,
+            "median": 88.55078352634777,
+            "minimum": 86.6195794086536
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":150,\"policy\":\"best-fit\",\"run_id\":\"20260930T135354Z-30c07a06\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\load\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 150,
+          "policy": "best-fit",
+          "run_id": "20260930T135354Z-30c07a06",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.546573968277457,
+            "median": 0.5366454055078854,
+            "minimum": 0.46313368281620465
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 150.1176971533934,
+            "median": 150.07541912624083,
+            "minimum": 149.80373448745752
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.18295739348370926,
+            "median": 0.020833333333333332,
+            "minimum": 0.0
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 103.39959009376327,
+            "median": 100.0072068860213,
+            "minimum": 65.15528181949051
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":50,\"policy\":\"best-fit\",\"run_id\":\"20260930T135354Z-30c07a06\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\load\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 50,
+          "policy": "best-fit",
+          "run_id": "20260930T135354Z-30c07a06",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.3667025670028627,
+            "median": 0.36663220265288404,
+            "minimum": 0.3551852203816994
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 50.11565653628702,
+            "median": 50.10083224190855,
+            "minimum": 50.08960420769238
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.0,
+            "median": 0.0,
+            "minimum": 0.0
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 48.485491329980164,
+            "median": 48.46523670469345,
+            "minimum": 48.46000247180904
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":500,\"policy\":\"best-fit\",\"run_id\":\"20260930T135354Z-30c07a06\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\load\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 500,
+          "policy": "best-fit",
+          "run_id": "20260930T135354Z-30c07a06",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "db_cpu_core_equivalents": {
+            "count": 3,
+            "maximum": 0.5201827230450482,
+            "median": 0.5138793303983881,
+            "minimum": 0.4970685658718294
+          },
+          "observed_submission_rate_jobs_per_second": {
+            "count": 3,
+            "maximum": 387.52877627222273,
+            "median": 382.0241656364281,
+            "minimum": 367.5435880967431
+          },
+          "sampled_lock_wait_fraction": {
+            "count": 3,
+            "maximum": 0.23076923076923078,
+            "median": 0.20512820512820512,
+            "minimum": 0.18214285714285713
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 88.86076978689752,
+            "median": 88.58443698761586,
+            "minimum": 87.75895561954053
+          }
+        }
+      }
+    },
+    "cpu_worker_sweep": {
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":16}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 16
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 2145.023,
+            "median": 2121.544,
+            "minimum": 2110.456
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 97.59199796364537,
+            "median": 97.24798185744763,
+            "minimum": 93.46349289065782
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":1}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 1
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 10593.737,
+            "median": 10491.564,
+            "minimum": 10173.22
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 25.16137563620186,
+            "median": 24.95160834550466,
+            "minimum": 24.610744514196117
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":2}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 2
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 5689.346,
+            "median": 5506.389,
+            "minimum": 5402.113
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 42.81593200879321,
+            "median": 42.66720775209438,
+            "minimum": 42.19390240254005
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":4}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 4
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 3459.024,
+            "median": 3028.181,
+            "minimum": 2998.112
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 66.19102259694748,
+            "median": 65.22816284209897,
+            "minimum": 64.86535405482151
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135145Z-db62ea68\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\scaling\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135145Z-db62ea68",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 2334.831,
+            "median": 2064.154,
+            "minimum": 2041.398
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 90.3879224747465,
+            "median": 88.55078352634777,
+            "minimum": 86.6195794086536
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":150,\"policy\":\"best-fit\",\"run_id\":\"20260930T135354Z-30c07a06\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\load\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 150,
+          "policy": "best-fit",
+          "run_id": "20260930T135354Z-30c07a06",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 2515.266,
+            "median": 822.089,
+            "minimum": 819.071
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 103.39959009376327,
+            "median": 100.0072068860213,
+            "minimum": 65.15528181949051
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":50,\"policy\":\"best-fit\",\"run_id\":\"20260930T135354Z-30c07a06\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\load\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 50,
+          "policy": "best-fit",
+          "run_id": "20260930T135354Z-30c07a06",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 151.853,
+            "median": 150.374,
+            "minimum": 133.83
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 48.485491329980164,
+            "median": 48.46523670469345,
+            "minimum": 48.46000247180904
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":500,\"policy\":\"best-fit\",\"run_id\":\"20260930T135354Z-30c07a06\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\load\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 500,
+          "policy": "best-fit",
+          "run_id": "20260930T135354Z-30c07a06",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 2308.017,
+            "median": 2265.746,
+            "minimum": 2173.53
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 88.86076978689752,
+            "median": 88.58443698761586,
+            "minimum": 87.75895561954053
+          }
+        }
+      }
+    },
+    "mixed_policy": {
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"best-fit\",\"run_id\":\"20260930T135319Z-e4870632\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\mixed\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "best-fit",
+          "run_id": "20260930T135319Z-e4870632",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "gpu_device_reservation_ratio": {
+            "count": 3,
+            "maximum": 0.41304347826086957,
+            "median": 0.2826086956521739,
+            "minimum": 0.2708333333333333
+          },
+          "gpu_vram_reservation_ratio": {
+            "count": 3,
+            "maximum": 0.16739130434782612,
+            "median": 0.1217391304347826,
+            "minimum": 0.11666666666666668
+          },
+          "max_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 3987.01,
+            "median": 3733.265,
+            "minimum": 3670.869
+          },
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 3513.45,
+            "median": 3497.79,
+            "minimum": 3303.745
+          },
+          "p95_ready_wait_ms_by_workload:cpu": {
+            "count": 3,
+            "maximum": 2800.846,
+            "median": 2760.718,
+            "minimum": 2709.036
+          },
+          "p95_ready_wait_ms_by_workload:gpu-large": {
+            "count": 3,
+            "maximum": 3692.69,
+            "median": 3686.082,
+            "minimum": 3602.39
+          },
+          "p95_ready_wait_ms_by_workload:gpu-small": {
+            "count": 3,
+            "maximum": 3892.687,
+            "median": 3709.422,
+            "minimum": 3476.174
+          },
+          "small_gpu_placement_fraction": {
+            "count": 3,
+            "maximum": 0.26666666666666666,
+            "median": 0.25,
+            "minimum": 0.23333333333333334
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 52.64977371158849,
+            "median": 51.45395122820535,
+            "minimum": 50.75939260171772
+          },
+          "whole_device_stranded_vram_mb": {
+            "count": 3,
+            "maximum": 21192.347826086956,
+            "median": 15315.478260869566,
+            "minimum": 11605.333333333334
+          }
+        }
+      },
+      "{\"offered_submission_rate_jobs_per_second\":0,\"policy\":\"first-fit\",\"run_id\":\"20260930T135319Z-e4870632\",\"source_report\":\"D:\\\\Workspace\\\\Atlas\\\\docs\\\\benchmarks\\\\2026-09-30\\\\mixed\\\\report.json.gz\",\"worker_count\":8}": {
+        "axes": {
+          "offered_submission_rate_jobs_per_second": 0,
+          "policy": "first-fit",
+          "run_id": "20260930T135319Z-e4870632",
+          "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+          "worker_count": 8
+        },
+        "metrics": {
+          "gpu_device_reservation_ratio": {
+            "count": 3,
+            "maximum": 0.4722222222222222,
+            "median": 0.32954545454545453,
+            "minimum": 0.3020833333333333
+          },
+          "gpu_vram_reservation_ratio": {
+            "count": 3,
+            "maximum": 0.2277777777777778,
+            "median": 0.13409090909090907,
+            "minimum": 0.12291666666666667
+          },
+          "max_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 4279.949,
+            "median": 4051.48,
+            "minimum": 3093.758
+          },
+          "p95_ready_queue_wait_ms": {
+            "count": 3,
+            "maximum": 3699.763,
+            "median": 3543.727,
+            "minimum": 2600.144
+          },
+          "p95_ready_wait_ms_by_workload:cpu": {
+            "count": 3,
+            "maximum": 2737.775,
+            "median": 2649.56,
+            "minimum": 1873.205
+          },
+          "p95_ready_wait_ms_by_workload:gpu-large": {
+            "count": 3,
+            "maximum": 4206.504,
+            "median": 3738.349,
+            "minimum": 2825.018
+          },
+          "p95_ready_wait_ms_by_workload:gpu-small": {
+            "count": 3,
+            "maximum": 3916.61,
+            "median": 3803.825,
+            "minimum": 2920.461
+          },
+          "small_gpu_placement_fraction": {
+            "count": 3,
+            "maximum": 0.31666666666666665,
+            "median": 0.3,
+            "minimum": 0.3
+          },
+          "throughput_jobs_per_second": {
+            "count": 3,
+            "maximum": 67.525925211585,
+            "median": 54.023565305004546,
+            "minimum": 51.2606885522036
+          },
+          "whole_device_stranded_vram_mb": {
+            "count": 3,
+            "maximum": 25486.222222222223,
+            "median": 18261.333333333332,
+            "minimum": 16570.18181818182
+          }
+        }
+      }
+    }
+  },
+  "complete_trial_count": 30,
+  "excluded_trials": [],
+  "figures": [
+    "cpu-workers-20260930t135145z-db62ea68-rate-0.png",
+    "cpu-workers-20260930t135145z-db62ea68-rate-0.svg",
+    "cpu-load-20260930t135145z-db62ea68.png",
+    "cpu-load-20260930t135145z-db62ea68.svg",
+    "mixed-policy-20260930t135319z-e4870632-rate-0.png",
+    "mixed-policy-20260930t135319z-e4870632-rate-0.svg",
+    "cpu-workers-20260930t135354z-30c07a06-rate-50.png",
+    "cpu-workers-20260930t135354z-30c07a06-rate-50.svg",
+    "cpu-workers-20260930t135354z-30c07a06-rate-150.png",
+    "cpu-workers-20260930t135354z-30c07a06-rate-150.svg",
+    "cpu-workers-20260930t135354z-30c07a06-rate-500.png",
+    "cpu-workers-20260930t135354z-30c07a06-rate-500.svg",
+    "cpu-load-20260930t135354z-30c07a06.png",
+    "cpu-load-20260930t135354z-30c07a06.svg"
+  ],
+  "reports": [
+    {
+      "complete_trial_count": 15,
+      "excluded_trial_count": 0,
+      "history_reset_between_trials": true,
+      "policy_order": [
+        "best-fit"
+      ],
+      "policy_order_bias_boundary": "trials run in configured policy order; reset removes history bias but machine time/load drift may remain",
+      "report_errors": [],
+      "run_id": "20260930T135145Z-db62ea68",
+      "source_bytes": 687997,
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "source_sha256": "26000cb925ece148307b6ea2e5262bd155e0aa60e91900e3314096e23654775f",
+      "trial_count": 15
+    },
+    {
+      "complete_trial_count": 6,
+      "excluded_trial_count": 0,
+      "history_reset_between_trials": true,
+      "policy_order": [
+        "first-fit",
+        "best-fit"
+      ],
+      "policy_order_bias_boundary": "trials run in configured policy order; reset removes history bias but machine time/load drift may remain",
+      "report_errors": [],
+      "run_id": "20260930T135319Z-e4870632",
+      "source_bytes": 281543,
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+      "source_sha256": "54ddfec68542efaeafd1d1e54b4e71b2a8ae91248c2da1773f41fef6256a7f52",
+      "trial_count": 6
+    },
+    {
+      "complete_trial_count": 9,
+      "excluded_trial_count": 0,
+      "history_reset_between_trials": true,
+      "policy_order": [
+        "best-fit"
+      ],
+      "policy_order_bias_boundary": "trials run in configured policy order; reset removes history bias but machine time/load drift may remain",
+      "report_errors": [],
+      "run_id": "20260930T135354Z-30c07a06",
+      "source_bytes": 410286,
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "source_sha256": "4c687c4fe2aacf71e871878a9a8ed0d0aced352a8b4f6a0799ca2861aa0a005c",
+      "trial_count": 9
+    }
+  ],
+  "trial_integrity": [
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w1-best-fit-ropen-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w1-best-fit-ropen-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w1-best-fit-ropen-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w2-best-fit-ropen-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w2-best-fit-ropen-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w2-best-fit-ropen-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w4-best-fit-ropen-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w4-best-fit-ropen-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w4-best-fit-ropen-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w8-best-fit-ropen-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w8-best-fit-ropen-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w8-best-fit-ropen-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w16-best-fit-ropen-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w16-best-fit-ropen-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135145Z-db62ea68",
+      "scenario_id": "bench-cpu-w16-best-fit-ropen-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\scaling\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135319Z-e4870632",
+      "scenario_id": "bench-mixed-w8-first-fit-ropen-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135319Z-e4870632",
+      "scenario_id": "bench-mixed-w8-first-fit-ropen-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135319Z-e4870632",
+      "scenario_id": "bench-mixed-w8-first-fit-ropen-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135319Z-e4870632",
+      "scenario_id": "bench-mixed-w8-best-fit-ropen-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135319Z-e4870632",
+      "scenario_id": "bench-mixed-w8-best-fit-ropen-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135319Z-e4870632",
+      "scenario_id": "bench-mixed-w8-best-fit-ropen-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\mixed\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r50-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r50-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r50-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r150-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r150-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r150-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r500-t1",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 1,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r500-t2",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 2,
+      "unfinished_at_deadline": 0
+    },
+    {
+      "complete": true,
+      "error": null,
+      "jobs_accepted": 300,
+      "jobs_dead_or_failed": 0,
+      "jobs_planned": 300,
+      "jobs_succeeded": 300,
+      "run_id": "20260930T135354Z-30c07a06",
+      "scenario_id": "bench-cpu-w8-best-fit-r500-t3",
+      "source_report": "D:\\Workspace\\Atlas\\docs\\benchmarks\\2026-09-30\\load\\report.json.gz",
+      "trial": 3,
+      "unfinished_at_deadline": 0
+    }
+  ]
+}

@@ -1,0 +1,1063 @@
+{
+  "format_version": "1",
+  "run_id": "20260930T140359Z-b10b9389",
+  "mode": "chaos",
+  "started_at": "2026-09-30T14:03:59.113188995Z",
+  "finished_at": "2026-09-30T14:04:07.212409434Z",
+  "isolated_schema": "atlas_exp_20260930t140359zb10b9389",
+  "configuration": {
+    "binaries": {
+      "api": {
+        "path": ".baseline/final/bin/api",
+        "sha256": "df88fe72c683f45f98fd30cd3a056b98d91c0ae49a6e266f42d8adfb610d27f6"
+      },
+      "experiment_worker": {
+        "path": ".baseline/final/bin/worker",
+        "sha256": "8b5c998aa7066528b4dacd637547a727b4ec8620b2268bba242c39be608ff634"
+      },
+      "scheduler": {
+        "path": ".baseline/final/bin/scheduler",
+        "sha256": "37bfd560a51bcd98912ce45172b846ab6792d3c48763184499bbde74d388374f"
+      }
+    },
+    "case_deadline": "40s",
+    "controller_pool_max_conns": 2,
+    "database_url_host": "127.0.0.1:55432",
+    "deadline": "2m0s",
+    "gpu_metric_boundary": "simulated GPU reservations only; free devices exclude every device with an active reservation; stranded VRAM and subthreshold slack are memory proxies, not physical utilization",
+    "history_reset_between_trials": true,
+    "job_duration": "50ms",
+    "jobs_per_batch": 100,
+    "lease_duration": "3s",
+    "migrations_dir": "migrations",
+    "policies": "first-fit,best-fit",
+    "policy_order": [
+      "first-fit",
+      "best-fit"
+    ],
+    "policy_order_bias_boundary": "trials run in configured policy order; reset removes history bias but machine time/load drift may remain",
+    "poll_interval": "100ms",
+    "postgres_pid_file": "",
+    "redis_addr_configured": true,
+    "sample_interval": "250ms",
+    "seed": 608,
+    "service_pool_max_conns": 4,
+    "submission_rates_jobs_per_second": "25,100,0",
+    "submit_concurrency": 16,
+    "throughput_boundary": "whole-batch succeeded count divided by wall time from first submission through last terminal run",
+    "trials": 3,
+    "worker_counts": "1,2,4,8,16",
+    "worker_id_order": "CPU-only IDs first, then large-GPU IDs, then small-GPU IDs; stable lexicographic scheduler order",
+    "workload_profile": "mixed"
+  },
+  "host_metadata": {
+    "go_version": "go1.26.5",
+    "goarch": "amd64",
+    "gomaxprocs": 6,
+    "goos": "linux",
+    "hostname": "TUF-Air-Herbert",
+    "logical_cpu_count": 6
+  },
+  "migrations_applied": [
+    "0001_init.sql",
+    "0002_resource_workloads.sql",
+    "0003_scheduler_assignment.sql",
+    "0004_execution_idempotency.sql",
+    "0005_job_cancellation.sql",
+    "0006_queue_backpressure.sql",
+    "0007_job_trace_context.sql"
+  ],
+  "trials": null,
+  "chaos_scenarios": [
+    {
+      "scenario_id": "graceful-shutdown",
+      "started_at": "2026-09-30T14:03:59.988695589Z",
+      "finished_at": "2026-09-30T14:04:07.19525147Z",
+      "passed": true,
+      "assertions": [
+        {
+          "name": "graceful completion job accepted",
+          "passed": true,
+          "observed": "HTTP 201",
+          "expected": "HTTP 201"
+        },
+        {
+          "name": "second-claim sentinel accepted",
+          "passed": true,
+          "observed": "HTTP 201",
+          "expected": "HTTP 201"
+        },
+        {
+          "name": "worker enters draining state",
+          "passed": true,
+          "observed": "database worker status=draining",
+          "expected": "database worker status=draining"
+        },
+        {
+          "name": "process exits within shutdown bound",
+          "passed": true,
+          "observed": "767.771296ms",
+          "expected": "\u003c=3s (2s grace plus cleanup)"
+        },
+        {
+          "name": "worker process exits cleanly",
+          "passed": true,
+          "observed": "\u003cnil\u003e",
+          "expected": "exit code 0 after handled SIGTERM"
+        },
+        {
+          "name": "in-flight run succeeds during drain",
+          "passed": true,
+          "observed": "status=succeeded attempt=1",
+          "expected": "status=succeeded attempt=1"
+        },
+        {
+          "name": "drained completion result is from attempt one",
+          "passed": true,
+          "observed": "result attempt=1",
+          "expected": "result attempt=1"
+        },
+        {
+          "name": "no second claim during shutdown",
+          "passed": true,
+          "observed": "id=e25fda10-713e-4a97-b30e-9213ea28cdb5 status=assigned attempt=0 leased_by=\"\" lease_expires_at=1970-01-01T00:00:00Z assigned_worker_id=\"grace-drain-completion-9fa8d4\" execution_key=\"a9ebccb8-8e91-4d4a-92cc-f52f5beab836\" result_attempt=\u003cnil\u003e",
+          "expected": "status=assigned attempt=0 still owned by draining worker"
+        },
+        {
+          "name": "stale-completion probe accepted",
+          "passed": true,
+          "observed": "HTTP 201",
+          "expected": "HTTP 201"
+        },
+        {
+          "name": "ignored-handler worker exits within shutdown bound",
+          "passed": true,
+          "observed": "2.00818141s",
+          "expected": "\u003c=3s (2s grace plus cleanup)"
+        },
+        {
+          "name": "old worker process exits cleanly",
+          "passed": true,
+          "observed": "\u003cnil\u003e",
+          "expected": "exit code 0 after handled SIGTERM"
+        },
+        {
+          "name": "old attempt remains running under a live lease after exit",
+          "passed": true,
+          "observed": "id=d3f01470-9443-4629-a8cb-d4ead93693a5 status=running attempt=1 leased_by=\"grace-stale-old-c1d7c1\" lease_expires_at=2026-09-30T14:04:06.94774Z assigned_worker_id=\"grace-stale-old-c1d7c1\" execution_key=\"1f616176-474d-4df0-a5d4-bce81cdb4e92\" result_attempt=\u003cnil\u003e",
+          "expected": "attempt=1 status=running old worker lease still live"
+        },
+        {
+          "name": "run is not reclaimed before lease expiry",
+          "passed": true,
+          "observed": "waited until 2026-09-30T14:04:06.94774Z",
+          "expected": "old lease expiry reached"
+        },
+        {
+          "name": "fresh worker recovers the run",
+          "passed": true,
+          "observed": "status=succeeded attempt=2",
+          "expected": "status=succeeded attempt=2"
+        },
+        {
+          "name": "recovery keeps the stable execution key",
+          "passed": true,
+          "observed": "1f616176-474d-4df0-a5d4-bce81cdb4e92",
+          "expected": "1f616176-474d-4df0-a5d4-bce81cdb4e92"
+        },
+        {
+          "name": "recovered result belongs to attempt two",
+          "passed": true,
+          "observed": "result attempt=2",
+          "expected": "result attempt=2"
+        },
+        {
+          "name": "late stale completion cannot replace recovered result",
+          "passed": true,
+          "observed": "id=d3f01470-9443-4629-a8cb-d4ead93693a5 status=succeeded attempt=2 leased_by=\"\" lease_expires_at=1970-01-01T00:00:00Z assigned_worker_id=\"grace-stale-recovery-0531f3\" execution_key=\"1f616176-474d-4df0-a5d4-bce81cdb4e92\" result_attempt=2",
+          "expected": "same run succeeded at attempt two with the stable execution key"
+        }
+      ]
+    }
+  ],
+  "database_samples": [
+    {
+      "at": "2026-09-30T14:04:00.238874707Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 2,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-worker-grace-drain-completion-9fa-0451f3": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:00.488898315Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-41c6f0": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-drain-completion-9fa-0451f3": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:00.739252971Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "oldest_ready_age_ms": 164.15,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-41c6f0": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-drain-completion-9fa-0451f3": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:00.989365964Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "oldest_ready_age_ms": 413.932,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-41c6f0": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-drain-completion-9fa-0451f3": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:01.239283453Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "oldest_ready_age_ms": 664.069,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-41c6f0": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-drain-completion-9fa-0451f3": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:01.489116602Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 1,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:01.739485405Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 2,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:01.989219449Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:02.239789546Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:02.489158407Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:02.739542783Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:02.989884051Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:03.239904386Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:03.48985683Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:03.73923901Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:03.989359623Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-7fa885": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-old-c1d7c1-b9c23d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:04.239182187Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 2,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:04.489643122Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:04.739460026Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:04.989879034Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:05.239610664Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:05.488923169Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:05.739167728Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:05.989506463Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:06.239703926Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:06.488934636Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:06.739355964Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 0,
+      "idle_app_connections": 5,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        }
+      }
+    },
+    {
+      "at": "2026-09-30T14:04:06.989031784Z",
+      "scenario_id": "chaos-graceful-shutdown",
+      "active_app_connections": 1,
+      "idle_app_connections": 4,
+      "lock_waiters": 0,
+      "sampled_lock_wait_fraction": 0,
+      "oldest_ready_age_ms": 5129.855,
+      "gpu_reserved_vram_mb": 0,
+      "gpu_capacity_vram_mb": 0,
+      "gpu_free_vram_mb": 0,
+      "gpu_available_devices": 0,
+      "gpu_reserved_devices": 0,
+      "subthreshold_available_vram_slack_for_16gb_job_mb": 0,
+      "whole_device_stranded_vram_mb": 0,
+      "connections_by_application": {
+        "atlasexp-api-c0c13d": {
+          "active": 0,
+          "idle": 1,
+          "other": 0
+        },
+        "atlasexp-scheduler-first-fit-22e553": {
+          "active": 0,
+          "idle": 2,
+          "other": 0
+        },
+        "atlasexp-worker-grace-stale-recovery-0531f-82a70d": {
+          "active": 1,
+          "idle": 1,
+          "other": 0
+        }
+      }
+    }
+  ],
+  "cleanup": {
+    "schema": "dropped"
+  }
+}
